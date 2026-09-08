@@ -1,0 +1,192 @@
+:root {
+  --parchment: #efe4c8;
+  --ink: #3a3125;
+  --ink-soft: #6b5f4b;
+  --line: rgba(58, 49, 37, 0.2);
+  --panel: rgba(243, 234, 213, 0.92);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #d9c9a3;
+  color: var(--ink);
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#game { position: fixed; inset: 0; }
+#game canvas { display: block; }
+
+.panel {
+  position: fixed;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  box-shadow: 0 6px 22px rgba(50, 40, 25, 0.16);
+  padding: 14px 16px;
+  backdrop-filter: blur(2px);
+  user-select: none;
+  pointer-events: none;
+}
+
+.hidden { display: none; }
+
+.divider {
+  height: 1px;
+  background: var(--line);
+  margin: 10px 0;
+}
+
+/* ---- HUD ---- */
+#hud { top: 20px; left: 20px; min-width: 214px; }
+
+.hud-title {
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  color: var(--ink-soft);
+  margin-bottom: 9px;
+}
+
+.hud-day {
+  font-size: 21px;
+  letter-spacing: 0.16em;
+}
+
+.hud-village {
+  font-size: 11px;
+  letter-spacing: 0.24em;
+  color: var(--ink-soft);
+  margin: 4px 0 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.hud-rows { display: flex; flex-direction: column; gap: 4px; }
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 22px;
+}
+
+.label {
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--ink-soft);
+}
+
+.value {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+}
+
+/* ---- Level progress ---- */
+.note {
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: var(--ink-soft);
+}
+
+.needs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 6px;
+}
+
+.need {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.55;
+}
+
+.need.done { opacity: 1; }
+
+/* ---- Inspect panel ---- */
+#inspect { top: 20px; right: 20px; min-width: 200px; max-width: 260px; }
+
+#inspect .name {
+  font-size: 14px;
+  letter-spacing: 0.2em;
+}
+
+#inspect .meta {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--ink-soft);
+  margin: 5px 0 9px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--line);
+}
+
+#inspect .stats { display: flex; flex-direction: column; gap: 4px; }
+#inspect .value { font-size: 12px; }
+
+/* ---- Hint ---- */
+#hint {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  letter-spacing: 0.13em;
+  color: var(--ink-soft);
+  opacity: 0.75;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 0.8s ease;
+  text-align: center;
+}
+
+#hint.faded { opacity: 0; }
+
+/* ---- Terrain debug ---- */
+#debug {
+  bottom: 20px;
+  left: 20px;
+  min-width: 214px;
+}
+
+#debug .name {
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  margin-bottom: 9px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+#debug .row { margin-bottom: 3px; }
+#debug .value { font-size: 12px; }
+
+#debug-legend {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.swatch {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--ink-soft);
+}
+
+.swatch i {
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  opacity: 0.75;
+}

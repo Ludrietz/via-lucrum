@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Via Lucrum</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="game"></div>
+
+    <div id="hud" class="panel">
+      <div class="hud-title">VIA LUCRUM</div>
+      <div class="hud-day" id="hud-day">DAY 1</div>
+      <div class="hud-village" id="hud-village">OAKRIDGE</div>
+      <div class="hud-rows" id="hud-stats"></div>
+      <div class="divider"></div>
+      <div class="hud-rows" id="hud-resources"></div>
+      <div class="divider"></div>
+      <div id="hud-progress"></div>
+    </div>
+
+    <div id="inspect" class="panel hidden"></div>
+
+    <div id="debug" class="panel hidden"></div>
+    <div id="debug-legend"></div>
+
+    <div id="hint">
+      Drag from the village to a resource site to lay a road &nbsp;·&nbsp; roads may
+      start on other roads &nbsp;·&nbsp; right-drag to erase a stretch &nbsp;·&nbsp; drag the map to pan, wheel to zoom &nbsp;·&nbsp; D for terrain debug
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
