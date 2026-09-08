@@ -1,5 +1,5 @@
 import { ResourceType, SiteType } from '../sim/types';
-import { WEAR_FULL } from '../sim/wear';
+import { WEAR_FULL } from '../sim/traffic';
 
 /** Parchment cartography underneath, Mini Metro information design on top. */
 export const COLORS = {
@@ -86,6 +86,15 @@ export function roadTierName(wear: number): string {
   if (wear >= WEAR_FULL * 0.2) return 'ROAD';
   return 'TRAIL';
 }
+
+/** Settlements are coloured by what they live on. */
+export const TRADE_COLORS: Record<string, number> = {
+  wood: COLORS.forest,
+  iron: COLORS.mine,
+  stone: COLORS.quarry,
+  food: COLORS.farm,
+  mixed: 0x8a6f4a,
+};
 
 export const DEPTH = {
   terrain: 0,

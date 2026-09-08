@@ -2,7 +2,9 @@ import { dist, type Vec2 } from './geometry';
 import { ResourceNode, type ResourceNodeConfig } from './resourceNode';
 import { RoadNetwork, type Anchor, type RoadEdge, type Route, type Site } from './roadNetwork';
 import { TerrainGrid, type TerrainBrush } from './terrain';
-import { WEAR_ON_BUILD, WEAR_PER_TRIP, WearField } from './wear';
+import { dominantGood, TrafficField, WEAR_ON_BUILD, WEAR_PER_TRIP } from './traffic';
+import { Settlement, stageFor, tradeFor, type Trade } from './settlement';
+import { SettlementSystem, type Candidate, type Origin, type SettlementContext } from './settlementSystem';
 import { TransportSystem, WorkforceSystem, type SimContext } from './systems';
 import { NodeState, ResourceType, type WorldEvent } from './types';
 import { Village } from './village';
@@ -42,17 +44,20 @@ export class World {
   readonly nodes: ResourceNode[] = [];
   readonly network = new RoadNetwork();
   readonly terrain: TerrainGrid;
-  readonly wear: WearField;
+  readonly traffic: TrafficField;
+  readonly settlements: Settlement[] = [];
 
   hours = 0;
 
   private readonly transport = new TransportSystem();
   private readonly workforce = new WorkforceSystem();
+  private readonly emergence = new SettlementSystem();
 
   private events: WorldEvent[] = [];
   private routeCache = new Map<ResourceNode, Route | null>();
   private cachedVersion = -1;
   private nextVillagerId = 1;
+  private nextSettlementId = 1;
   private growthTimer = 0;
   private pruneTimer = 0;
 
@@ -60,7 +65,7 @@ export class World {
     this.width = config.width;
     this.height = config.height;
     this.terrain = new TerrainGrid(config.width, config.height, config.terrain);
-    this.wear = new WearField(config.width, config.height);
+    this.traffic = new TrafficField(config.width, config.height);
 
     this.village = new Village(config.village.name, config.village.x, config.village.y);
     for (const cfg of config.nodes) this.nodes.push(new ResourceNode(cfg));
@@ -82,7 +87,7 @@ export class World {
 
   /** Everything a road may start or end on right now. */
   get connectableSites(): Site[] {
-    return [this.village, ...this.visibleNodes];
+    return [this.village, ...this.visibleNodes, ...this.settlements];
   }
 
   storage(resource: ResourceType): number {
@@ -97,7 +102,11 @@ export class World {
   /** The village or a visible node under a point, for hover and inspection. */
   siteAt(point: Vec2, slack = 12): Site | null {
     if (dist(this.village.position, point) <= this.village.radius + slack) return this.village;
-    return this.visibleNodes.find((n) => dist(n.position, point) <= n.radius + slack) ?? null;
+
+    const node = this.visibleNodes.find((n) => dist(n.position, point) <= n.radius + slack);
+    if (node) return node;
+
+    return this.settlements.find((s) => dist(s.position, point) <= s.radius + slack) ?? null;
   }
 
   anchorAt(point: Vec2): Anchor | null {
@@ -132,7 +141,7 @@ export class World {
       edge.difficulty = this.terrain.averageCost(edge.points);
       // A newly cleared road shows faintly from the start, then has to be
       // walked to stay: unused, it fades back into the landscape.
-      this.wear.deposit(edge.points, WEAR_ON_BUILD);
+      this.traffic.deposit(edge.points, WEAR_ON_BUILD);
     }
 
     this.events.push({ type: 'roadBuilt', points: created.flatMap((e) => e.points) });
@@ -155,7 +164,8 @@ export class World {
 
     for (const node of this.nodes) node.produce(dt);
 
-    this.wear.decay(dt);
+    this.traffic.decay(dt);
+    this.emergence.update(dt, this.settlementContext());
     this.grow(dt);
     this.tryLevelUp();
 
@@ -163,6 +173,7 @@ export class World {
     if (this.pruneTimer >= PRUNE_INTERVAL) {
       this.pruneTimer = 0;
       this.pruneAbandonedRoads();
+      this.revealNodes();
     }
   }
 
@@ -187,15 +198,18 @@ export class World {
     return true;
   }
 
-  /** A delivery has arrived: wear the ground the whole way back. */
-  private recordTrip(route: Route): void {
+  /**
+   * A delivery has arrived. The ground remembers both the passage and what was
+   * carried, which is what eventually decides whether anywhere grows here.
+   */
+  private recordTrip(route: Route, resource: ResourceType | null, amount: number): void {
     for (const edge of route.edges) edge.usage++;
-    this.wear.deposit(route.points, WEAR_PER_TRIP);
+    this.traffic.deposit(route.points, WEAR_PER_TRIP, resource, amount);
   }
 
   /** How packed down a road is, averaged along it. */
   wearOf(edge: RoadEdge): number {
-    return this.wear.along(edge.points);
+    return this.traffic.wearAlong(edge.points);
   }
 
   /**
@@ -217,7 +231,7 @@ export class World {
 
     for (const edge of [...this.network.edges]) {
       if (inUse.has(edge) || !edge.isBuilt) continue;
-      if (this.wear.weakestAlong(edge.points) >= ABANDON_BELOW) continue;
+      if (this.traffic.weakestAlong(edge.points) >= ABANDON_BELOW) continue;
 
       this.network.abandon(edge);
       this.events.push({ type: 'roadLost', points: edge.points.map((p) => ({ ...p })) });
@@ -230,7 +244,7 @@ export class World {
       nodes: this.nodes,
       routeTo: (node) => this.routeTo(node),
       costAt: (point) => this.terrain.costAt(point),
-      recordTrip: (route) => this.recordTrip(route),
+      recordTrip: (route, resource, amount) => this.recordTrip(route, resource, amount),
       emit: (event) => this.events.push(event),
     };
   }
@@ -261,11 +275,18 @@ export class World {
 
   /** Nodes inside the village's influence become visible and connectable. */
   private revealNodes(): void {
-    const reach = this.village.influenceRadius;
+    // Every established place opens up the country around it, so the map is
+    // unlocked by the network spreading rather than by the first village alone.
+    const centres: Array<{ position: Vec2; reach: number }> = [
+      { position: this.village.position, reach: this.village.influenceRadius },
+      ...this.settlements
+        .filter((s) => s.influenceRadius > 0)
+        .map((s) => ({ position: s.position, reach: s.influenceRadius })),
+    ];
 
     for (const node of this.nodes) {
       if (node.state !== NodeState.Hidden) continue;
-      if (dist(node.position, this.village.position) > reach) continue;
+      if (!centres.some((c) => dist(node.position, c.position) <= c.reach)) continue;
 
       node.state = NodeState.Reachable;
       this.events.push({ type: 'discovered', at: { ...node.position }, name: node.name });
@@ -304,6 +325,95 @@ export class World {
     // New nodes may now be reachable, and older roads may already touch them.
     this.cachedVersion = -1;
     this.refreshRoutes();
+  }
+
+  // ------------------------------------------------------------ settlements
+
+  private settlementContext(): SettlementContext {
+    return {
+      traffic: this.traffic,
+      terrain: this.terrain,
+      network: this.network,
+      nodes: this.nodes,
+      village: this.village,
+      settlements: this.settlements,
+      hours: this.hours,
+      found: (patch, position, trade, potential, origin) =>
+        this.foundSettlement(patch, position, trade, potential, origin),
+    };
+  }
+
+  /**
+   * Somewhere has become worth living. It is placed on the road that made it,
+   * which splits that road and turns the split into a real node, so traffic
+   * runs through the new place and the player can build on from it.
+   */
+  private foundSettlement(
+    patch: number,
+    position: Vec2,
+    trade: Trade,
+    potential: number,
+    origin: Origin,
+  ): void {
+    const settlement = new Settlement({
+      id: this.nextSettlementId++,
+      position,
+      patch,
+      foundedHours: this.hours,
+      stage: stageFor(potential),
+      trade,
+      potential,
+      name: this.nameFor(trade),
+      origin,
+    });
+
+    const node = this.network.placeSiteOn(position, settlement);
+    if (!node) return;
+
+    // Snap to where the road actually runs, so it never floats beside it.
+    settlement.position.x = node.position.x;
+    settlement.position.y = node.position.y;
+
+    this.settlements.push(settlement);
+    this.cachedVersion = -1;
+    this.revealNodes();
+    this.events.push({
+      type: 'settlementFounded',
+      at: { ...settlement.position },
+      name: settlement.name,
+    });
+  }
+
+  /** First unused name from the trade's list, else a numbered fallback. */
+  private nameFor(trade: Trade): string {
+    const taken = new Set(this.settlements.map((s) => s.name));
+    const free = trade.names.find((name) => !taken.has(name));
+    return free ?? `${trade.names[0]} ${this.settlements.length + 1}`;
+  }
+
+  /** Candidate ground the emergence system is watching, for the overlay. */
+  get watchedSites(): Candidate[] {
+    return this.emergence.topCandidates(this.settlementContext());
+  }
+
+  /** Accumulated settlement potential at a point, 0 to 1. */
+  potentialAt(point: Vec2): number {
+    return this.emergence.potentialAt(this.traffic.indexAt(point), this.settlementContext());
+  }
+
+  /** Why that potential: the individual contributions behind it. */
+  potentialBreakdown(point: Vec2): Record<string, number> {
+    return this.emergence.breakdownAt(this.traffic.indexAt(point));
+  }
+
+  /** What kind of place this spot would turn into, on current traffic. */
+  likelyTradeAt(point: Vec2): string {
+    const { resource, share } = dominantGood(this.traffic.goodsAt(point));
+    return tradeFor(resource, share).label;
+  }
+
+  settlementAt(point: Vec2, slack = 12): Settlement | null {
+    return this.settlements.find((s) => dist(s.position, point) <= s.radius + slack) ?? null;
   }
 
   private addVillager(): Villager {

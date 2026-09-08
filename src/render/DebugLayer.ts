@@ -25,10 +25,10 @@ export class DebugLayer {
   private readonly panel: HTMLElement;
   private readonly legend: HTMLElement;
 
-  private readonly costLabels: Phaser.GameObjects.Text[] = [];
   private readonly roadLabels: Phaser.GameObjects.Text[] = [];
 
   private enabled = false;
+  private gridBuilt = false;
   private drawnVersion = -1;
 
   constructor(private readonly scene: Phaser.Scene, private readonly world: World) {
@@ -37,16 +37,20 @@ export class DebugLayer {
     this.panel = document.getElementById('debug')!;
     this.legend = document.getElementById('debug-legend')!;
 
-    this.drawGrid();
     this.renderLegend();
   }
 
   toggle(): void {
     this.enabled = !this.enabled;
+    // The grid is tens of thousands of cells; build it the first time it is
+    // actually wanted rather than at boot.
+    if (this.enabled && !this.gridBuilt) {
+      this.gridBuilt = true;
+      this.drawGrid();
+    }
     this.grid.setVisible(this.enabled);
     this.routes.setVisible(this.enabled);
     this.panel.classList.toggle('hidden', !this.enabled);
-    for (const label of this.costLabels) label.setVisible(this.enabled);
     for (const label of this.roadLabels) label.setVisible(this.enabled);
 
     if (this.enabled) {
@@ -65,6 +69,11 @@ export class DebugLayer {
   }
 
   /** The terrain as the simulation stores it, tinted and priced. */
+  /**
+   * The grid the pathfinder sees, tinted by what it costs to cross. The
+   * legend carries the numbers: a label per cell would be eighteen hundred
+   * text objects on a map this size, which the renderer walks every frame.
+   */
   private drawGrid(): void {
     const grid = this.world.terrain;
     const size = grid.cellSize;
@@ -78,21 +87,6 @@ export class DebugLayer {
       }
     }
 
-    // Cost figures stay readable only when zoomed in, so keep them sparse.
-    for (let row = 2; row < grid.rows; row += 4) {
-      for (let col = 2; col < grid.cols; col += 4) {
-        const cost = TERRAIN_COSTS[grid.typeAtCell(col, row)];
-        const centre = grid.cellCentre(col, row);
-        const label = this.scene.add.text(
-          centre.x,
-          centre.y,
-          Number.isFinite(cost) ? cost.toFixed(1) : '∞',
-          { fontFamily: FONT_FAMILY, fontSize: '11px', color: '#2b2419' },
-        );
-        label.setOrigin(0.5).setAlpha(0.6).setDepth(DEPTH.debugGrid).setVisible(false);
-        this.costLabels.push(label);
-      }
-    }
   }
 
   /**

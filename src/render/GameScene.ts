@@ -9,6 +9,7 @@ import { DebugLayer } from './DebugLayer';
 import { FxLayer } from './FxLayer';
 import { InfluenceLayer } from './InfluenceLayer';
 import { RoadLayer } from './RoadLayer';
+import { SettlementLayer } from './SettlementLayer';
 import { SiteLayer } from './SiteLayer';
 import { TerrainLayer } from './TerrainLayer';
 import { VillagerLayer } from './VillagerLayer';
@@ -20,9 +21,11 @@ import { VillagerLayer } from './VillagerLayer';
 export class GameScene extends Phaser.Scene {
   private world!: World;
   private camera!: CameraController;
+  private terrainLayer!: TerrainLayer;
   private influence!: InfluenceLayer;
   private roads!: RoadLayer;
   private sites!: SiteLayer;
+  private settlements!: SettlementLayer;
   private villagers!: VillagerLayer;
   private fx!: FxLayer;
   private debug!: DebugLayer;
@@ -33,6 +36,8 @@ export class GameScene extends Phaser.Scene {
   private erasing = false;
   private hovered: Site | null = null;
   private selected: Site | null = null;
+  /** Where on the network the cursor is, when it is over a road. */
+  private hoveredRoadPoint: { x: number; y: number } | null = null;
 
   constructor() {
     super('game');
@@ -41,10 +46,11 @@ export class GameScene extends Phaser.Scene {
   create(): void {
     this.world = new World(PROTOTYPE_MAP);
 
-    new TerrainLayer(this, this.world);
+    this.terrainLayer = new TerrainLayer(this, this.world);
     this.influence = new InfluenceLayer(this, this.world);
     this.roads = new RoadLayer(this, this.world);
     this.sites = new SiteLayer(this, this.world);
+    this.settlements = new SettlementLayer(this, this.world);
     this.villagers = new VillagerLayer(this, this.world);
     this.fx = new FxLayer(this);
     this.debug = new DebugLayer(this, this.world);
@@ -76,12 +82,14 @@ export class GameScene extends Phaser.Scene {
     this.fx.handle(this.world.drainEvents());
 
     this.camera.update(dt);
+    this.terrainLayer.update();
     this.influence.update(dt);
     this.roads.update(dt);
     this.sites.update(dt);
+    this.settlements.update(dt);
     this.villagers.update(dt);
     this.debug.update();
-    this.hud.update(this.hovered ?? this.selected);
+    this.hud.update(this.hovered ?? this.selected, this.hoveredRoadPoint);
   }
 
   // ------------------------------------------------------------------ input
@@ -115,6 +123,7 @@ export class GameScene extends Phaser.Scene {
 
     this.hovered = this.world.siteAt(point);
     this.sites.setHovered(this.hovered);
+    this.settlements.setHovered(this.hovered);
 
     if (this.erasing && pointer.rightButtonDown()) {
       this.world.eraseRoadAt(point);
@@ -124,7 +133,9 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Show which stretch is under the cursor: that is the unit an erase takes.
-    this.roads.setHighlight(this.hovered ? null : this.world.roadAt(point), false);
+    const road = this.hovered ? null : this.world.roadAt(point);
+    this.roads.setHighlight(road, false);
+    this.hoveredRoadPoint = road ? point : null;
 
     if (this.drawing.active) {
       this.drawing.extend(this.world, point);

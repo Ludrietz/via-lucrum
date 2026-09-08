@@ -17,6 +17,9 @@ function mulberry32(seed: number): () => number {
 }
 
 /** How often a cell of each type gets a glyph, and how big it draws. */
+/** Side of one scatter tile, in world units. */
+const CHUNK_SIZE = 1024;
+
 const SCATTER: Partial<Record<TerrainType, { chance: number; size: number }>> = {
   [TerrainType.Forest]: { chance: 0.5, size: 7 },
   [TerrainType.Hills]: { chance: 0.3, size: 13 },
@@ -32,10 +35,46 @@ const SCATTER: Partial<Record<TerrainType, { chance: number; size: number }>> = 
  * the pathfinder actually walks.
  */
 export class TerrainLayer {
-  constructor(scene: Phaser.Scene, world: World) {
-    const g = scene.add.graphics();
-    g.setDepth(DEPTH.terrain);
-    this.draw(g, world);
+  /** Scatter is split into tiles so only what is on screen is ever drawn. */
+  private readonly chunks: Array<{ gfx: Phaser.GameObjects.Graphics; bounds: Phaser.Geom.Rectangle }> = [];
+  private readonly chunkCols: number;
+
+  constructor(private readonly scene: Phaser.Scene, world: World) {
+    const base = scene.add.graphics();
+    base.setDepth(DEPTH.terrain);
+
+    this.chunkCols = Math.ceil(world.width / CHUNK_SIZE);
+    const chunkRows = Math.ceil(world.height / CHUNK_SIZE);
+
+    for (let row = 0; row < chunkRows; row++) {
+      for (let col = 0; col < this.chunkCols; col++) {
+        this.chunks.push({
+          gfx: scene.add.graphics().setDepth(DEPTH.terrain),
+          bounds: new Phaser.Geom.Rectangle(col * CHUNK_SIZE, row * CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE),
+        });
+      }
+    }
+
+    this.draw(base, world);
+  }
+
+  /**
+   * Hide the tiles the camera cannot see. Phaser skips invisible objects
+   * entirely, which is what keeps a map this size affordable: the washes are a
+   * couple of dozen shapes, but the trees and peaks run to several thousand.
+   */
+  update(): void {
+    const view = this.scene.cameras.main.worldView;
+
+    for (const chunk of this.chunks) {
+      chunk.gfx.setVisible(Phaser.Geom.Rectangle.Overlaps(view, chunk.bounds));
+    }
+  }
+
+  private chunkAt(point: Vec2): Phaser.GameObjects.Graphics {
+    const col = Math.max(0, Math.min(this.chunkCols - 1, Math.floor(point.x / CHUNK_SIZE)));
+    const row = Math.max(0, Math.floor(point.y / CHUNK_SIZE));
+    return (this.chunks[row * this.chunkCols + col] ?? this.chunks[0]).gfx;
   }
 
   private draw(g: Phaser.GameObjects.Graphics, world: World): void {
@@ -139,7 +178,7 @@ export class TerrainLayer {
   }
 
   /** Glyphs placed from the grid itself, jittered so the cells never show. */
-  private scatter(g: Phaser.GameObjects.Graphics, rand: () => number, world: World): void {
+  private scatter(_g: Phaser.GameObjects.Graphics, rand: () => number, world: World): void {
     const grid = world.terrain;
     const cell = grid.cellSize;
     const sites = [world.village.position, ...world.nodes.map((n) => n.position)];
@@ -160,9 +199,10 @@ export class TerrainLayer {
         if (sites.some((s) => Math.hypot(s.x - at.x, s.y - at.y) < 48)) continue;
 
         const size = style.size * (0.7 + rand() * 0.6);
-        if (type === TerrainType.Forest) this.tree(g, at, size);
-        else if (type === TerrainType.Hills) this.hill(g, at, size);
-        else this.peak(g, at, size);
+        const chunk = this.chunkAt(at);
+        if (type === TerrainType.Forest) this.tree(chunk, at, size);
+        else if (type === TerrainType.Hills) this.hill(chunk, at, size);
+        else this.peak(chunk, at, size);
       }
     }
   }

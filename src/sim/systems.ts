@@ -1,7 +1,7 @@
 import type { ResourceNode } from './resourceNode';
 import type { Vec2 } from './geometry';
 import type { Route } from './roadNetwork';
-import { NodeState, VillagerRole, VillagerState, type WorldEvent } from './types';
+import { NodeState, VillagerRole, VillagerState, type ResourceType, type WorldEvent } from './types';
 import type { Village } from './village';
 import { CARRY_CAPACITY, type Villager } from './villager';
 
@@ -12,8 +12,8 @@ export interface SimContext {
   routeTo(node: ResourceNode): Route | null;
   /** How hard the ground at a point is to cross, relative to open plains. */
   costAt(point: Vec2): number;
-  /** A delivery just came in along this route; wear the ground it used. */
-  recordTrip(route: Route): void;
+  /** A delivery just came in along this route; mark the ground it used. */
+  recordTrip(route: Route, resource: ResourceType | null, amount: number): void;
   emit(event: WorldEvent): void;
 }
 
@@ -144,7 +144,7 @@ export class TransportSystem {
           });
         }
 
-        if (villager.route) ctx.recordTrip(villager.route);
+        if (villager.route) ctx.recordTrip(villager.route, cargo?.resource ?? null, cargo?.amount ?? 0);
         villager.release();
         return;
       }

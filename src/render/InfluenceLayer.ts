@@ -2,6 +2,9 @@ import Phaser from 'phaser';
 import type { World } from '../sim/world';
 import { COLORS, DEPTH } from './theme';
 
+/** Dots around the frontier, however large the reach grows. */
+const FRONTIER_DOTS = 200;
+
 /**
  * The reach of the civilisation. Deliberately not a range indicator: a warm
  * tint over settled land, fading out through a scatter of dots rather than
@@ -43,7 +46,12 @@ export class InfluenceLayer {
     g.fillCircle(x, y, r * 0.42);
 
     // Frontier: dots that thin out instead of a drawn edge.
-    const count = Math.round(r * 0.9);
+    //
+    // Fixed count, and squares rather than circles. This is redrawn rarely but
+    // Phaser re-tessellates a Graphics every frame it is visible, so a dot per
+    // unit of radius on a map this size costs more than everything else on
+    // screen put together.
+    const count = FRONTIER_DOTS;
     for (let i = 0; i < count; i++) {
       const angle = (i / count) * Math.PI * 2;
       // Deterministic wobble so the frontier is ragged, not machined.
@@ -52,7 +60,7 @@ export class InfluenceLayer {
       const dotRadius = r + wobble + spread;
 
       g.fillStyle(COLORS.influence, 0.16 + ((i * 13) % 7) * 0.03);
-      g.fillCircle(x + Math.cos(angle) * dotRadius, y + Math.sin(angle) * dotRadius, 1.6);
+      g.fillRect(x + Math.cos(angle) * dotRadius - 1.6, y + Math.sin(angle) * dotRadius - 1.6, 3.2, 3.2);
     }
   }
 }

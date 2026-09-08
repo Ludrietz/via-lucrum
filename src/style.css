@@ -190,3 +190,22 @@ html, body {
   border-radius: 2px;
   opacity: 0.75;
 }
+
+/* ---- Meters in the inspect panel ---- */
+.meter {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.meter .bar {
+  font-family: "Consolas", "SF Mono", "Menlo", monospace;
+  font-size: 10px;
+  letter-spacing: -0.5px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+#inspect .note { margin-top: 6px; line-height: 1.5; }
+#inspect .divider { margin: 9px 0; }

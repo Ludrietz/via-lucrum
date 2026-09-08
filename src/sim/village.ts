@@ -17,14 +17,29 @@ export interface VillageLevel {
  * it can actually operate.
  */
 export const VILLAGE_LEVELS: VillageLevel[] = [
-  { population: 5, influence: 330, workersPerNode: 1, cost: null },
-  { population: 8, influence: 470, workersPerNode: 1, cost: { wood: 8, food: 6 } },
-  { population: 13, influence: 630, workersPerNode: 2, cost: { wood: 20, food: 16, stone: 10 } },
+  { population: 5, influence: 480, workersPerNode: 1, cost: null },
+  { population: 8, influence: 660, workersPerNode: 1, cost: { wood: 8, food: 6 } },
+  { population: 13, influence: 800, workersPerNode: 2, cost: { wood: 20, food: 16, stone: 10 } },
   {
     population: 20,
-    influence: 820,
+    influence: 900,
     workersPerNode: 2,
     cost: { wood: 40, food: 30, stone: 24, iron: 18 },
+  },
+  // Past this the village stops seeing further: opening up the country is the
+  // network's job now. What it keeps giving is hands to work the roads, which
+  // is what lets traffic stay thick as the network spreads.
+  {
+    population: 30,
+    influence: 900,
+    workersPerNode: 2,
+    cost: { wood: 80, food: 60, stone: 50, iron: 40 },
+  },
+  {
+    population: 42,
+    influence: 900,
+    workersPerNode: 2,
+    cost: { wood: 150, food: 120, stone: 100, iron: 80 },
   },
 ];
 

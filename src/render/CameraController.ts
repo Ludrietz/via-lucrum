@@ -1,6 +1,8 @@
 import Phaser from 'phaser';
 
 const MAX_ZOOM = 2.2;
+/** Comfortable working scale: a basin fills the view, not a kingdom. */
+const START_ZOOM = 0.85;
 const ZOOM_STEP = 0.0016;
 
 /**
@@ -30,7 +32,9 @@ export class CameraController {
     this.cam.setBackgroundColor('#d9c9a3');
 
     this.minZoom = this.coverZoom();
-    const start = Phaser.Math.Clamp(this.minZoom * 1.6, this.minZoom, MAX_ZOOM);
+    // The map is far larger than the part anyone is working in, so open at a
+    // readable scale over the village rather than fitting the whole country.
+    const start = Phaser.Math.Clamp(START_ZOOM, this.minZoom, MAX_ZOOM);
     this.cam.setZoom(start);
     this.targetZoom = start;
     this.cam.centerOn(worldWidth / 2, worldHeight / 2);

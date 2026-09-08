@@ -1,0 +1,168 @@
+import { dist, type Vec2 } from './geometry';
+import { ResourceType } from './types';
+
+/**
+ * How far along a place has come. Nothing is placed by the player; a spot on
+ * the network works its way up this ladder, and slides back down it if the
+ * traffic that made it interesting goes away.
+ */
+export enum SettlementStage {
+  /** A candidate the simulation is watching. Not drawn. */
+  Site = 'site',
+  /** A hut or two by the road. */
+  Roadside = 'roadside',
+  Hamlet = 'hamlet',
+  Settlement = 'settlement',
+}
+
+export const STAGE_LABELS: Record<SettlementStage, string> = {
+  [SettlementStage.Site]: 'SITE',
+  [SettlementStage.Roadside]: 'ROADSIDE',
+  [SettlementStage.Hamlet]: 'HAMLET',
+  [SettlementStage.Settlement]: 'SETTLEMENT',
+};
+
+/** Potential at which each stage is reached. Tuning lives here. */
+export const STAGE_THRESHOLDS: ReadonlyArray<{ stage: SettlementStage; potential: number }> = [
+  // A well-served spoke settles around 0.50-0.55, which comfortably makes a
+  // hamlet but not a settlement: the last step needs the junction term, so a
+  // place becomes a settlement by becoming a hub rather than merely a busy one.
+  { stage: SettlementStage.Settlement, potential: 0.66 },
+  { stage: SettlementStage.Hamlet, potential: 0.44 },
+  { stage: SettlementStage.Roadside, potential: 0.28 },
+];
+
+export function stageFor(potential: number): SettlementStage {
+  return (
+    STAGE_THRESHOLDS.find((step) => potential >= step.potential)?.stage ?? SettlementStage.Site
+  );
+}
+
+/**
+ * What a place does for a living, taken from whatever has been moving through
+ * it. Only raw goods exist today, but the shape is deliberately "a trade that
+ * grew out of a good" so that milling, smelting and the rest can slot in later
+ * without moving anything.
+ */
+export interface Trade {
+  readonly key: string;
+  readonly label: string;
+  /** Names this trade draws on, in order of use. */
+  readonly names: readonly string[];
+}
+
+export const TRADES: Record<string, Trade> = {
+  wood: {
+    key: 'wood',
+    label: 'Timber',
+    names: ['Timberton', 'Oakhurst', 'Sawmill Cross', 'Elmsgate', 'Bark Hollow'],
+  },
+  iron: {
+    key: 'iron',
+    label: 'Ironwork',
+    names: ['Ironford', 'Forgeton', 'Slagmoor', 'Anvilrest', 'Cinderby'],
+  },
+  stone: {
+    key: 'stone',
+    label: 'Stonework',
+    names: ['Marlstone', 'Chiselgate', 'Cairnwick', 'Flintbury', 'Gravelrun'],
+  },
+  food: {
+    key: 'food',
+    label: 'Grain',
+    names: ['Grainham', 'Millbrook', 'Harvestly', 'Wheatfield', 'Barleywick'],
+  },
+  mixed: {
+    key: 'mixed',
+    label: 'Market',
+    names: ['Crossroads', 'Waymeet', 'Tollbridge', 'Fivelanes', 'Marketstead'],
+  },
+};
+
+/** The share one good must hold before a place is known for it. */
+export const SPECIALISATION_SHARE = 0.55;
+
+export function tradeFor(resource: ResourceType | null, share: number): Trade {
+  if (!resource || share < SPECIALISATION_SHARE) return TRADES.mixed;
+  return TRADES[resource] ?? TRADES.mixed;
+}
+
+/**
+ * A place that grew on the network. Once founded it is a site in its own
+ * right: roads can be drawn to it, routes pass through it, and it widens the
+ * reach of the civilisation the same way the first village does.
+ */
+export class Settlement {
+  readonly id: number;
+  readonly position: Vec2;
+  /** The patch of ground this grew out of. */
+  readonly patch: number;
+  readonly foundedHours: number;
+
+  name: string;
+  stage: SettlementStage;
+  trade: Trade;
+  /** 0..1, the same value the site was judged on; keeps moving after founding. */
+  potential: number;
+  population = 1;
+  /** What the traffic looked like when it first took hold. */
+  readonly origin: { resource: ResourceType | null; share: number };
+
+  constructor(params: {
+    id: number;
+    position: Vec2;
+    patch: number;
+    foundedHours: number;
+    stage: SettlementStage;
+    trade: Trade;
+    potential: number;
+    name: string;
+    origin: { resource: ResourceType | null; share: number };
+  }) {
+    this.id = params.id;
+    this.position = { ...params.position };
+    this.patch = params.patch;
+    this.foundedHours = params.foundedHours;
+    this.stage = params.stage;
+    this.trade = params.trade;
+    this.potential = params.potential;
+    this.name = params.name;
+    this.origin = params.origin;
+  }
+
+  /** Drawn size, and the hit target for drawing roads to it. */
+  get radius(): number {
+    switch (this.stage) {
+      case SettlementStage.Settlement:
+        return 24;
+      case SettlementStage.Hamlet:
+        return 19;
+      default:
+        return 15;
+    }
+  }
+
+  /**
+   * How far this place makes the world legible. A hamlet is a modest second
+   * centre; a settlement is a real one. This is what turns the network into
+   * something that opens up more of the map rather than only the first village.
+   */
+  get influenceRadius(): number {
+    switch (this.stage) {
+      case SettlementStage.Settlement:
+        return 900;
+      case SettlementStage.Hamlet:
+        return 620;
+      default:
+        return 0;
+    }
+  }
+
+  ageInDays(nowHours: number): number {
+    return Math.max(0, Math.floor((nowHours - this.foundedHours) / 24));
+  }
+
+  distanceTo(point: Vec2): number {
+    return dist(this.position, point);
+  }
+}

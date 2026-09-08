@@ -1,8 +1,10 @@
-# Via Lucrum — Prototype 0.2
+# Via Lucrum — Prototype 0.3
 
-Logistics, influence, terrain and dynamic roads. You draw the network; the
-landscape decides which parts of it get used, and the civilisation grows into
-what is left.
+You build the roads. The economy builds the settlements.
+
+You draw a network across a country; the landscape decides which parts of it
+get used; and where enough goods move for long enough, towns appear on their
+own and become centres in their own right.
 
 ```bash
 npm install
@@ -53,6 +55,51 @@ site if it would leave too few hands for the roads.
 | 2 | 8 | 470 | 1 |
 | 3 | 13 | 630 | 2 |
 | 4 | 20 | 820 | 2 |
+
+## Settlements
+
+Nothing is ever placed by hand. There is no build button. A settlement is what
+happens when a stretch of road stays useful for long enough.
+
+Every delivery leaves two marks on the ground it crossed: wear, and a record of
+**what was carried**. A patch is then scored continuously on five things —
+how much moves through it, how good the road is, whether routes meet there,
+what it is near, and what it is standing on — with crowding from the village
+and existing towns scaling the whole result down. That score is only a target:
+potential eases towards it over about a minute and a half, so a place has to
+stay worth something before anything appears, and slides back if the traffic
+dries up.
+
+```
+site → roadside → hamlet → settlement
+```
+
+A well-served spoke settles around 0.50-0.55 potential, which comfortably makes
+a **hamlet** but cannot make a **settlement** — the last step needs the junction
+term, so a place becomes a settlement by becoming a *hub*. Draw another road
+through your hamlet and watch it grow.
+
+A settlement takes its trade from whatever dominates the traffic that made it:
+Timberton on a wood route, Ironford on ore, Grainham on grain, Crossroads where
+nothing dominates. The trade is re-read as traffic changes, so a timber town on
+a route that shifts to mixed cargo becomes a market town. Only raw goods exist
+today, but a trade is modelled as "a craft that grew out of a good" so milling,
+smelting and the rest can slot in later without moving anything.
+
+Once founded, a settlement is a **real node**: it splits the road it grew on,
+routes run through it, you can draw new roads to and from it, and — from hamlet
+upward — it opens up the country around it the way the first village does. That
+is what makes the map expand. Oakridge can see 900 at its largest, which is
+about a fifth of the world; everything past that is reached by growing a second
+centre out towards it, then a third.
+
+Sites are never built over: a forest stays a forest, and nothing may take hold
+within 150 of a resource node.
+
+**Reading it:** hover a road for its traffic, its goods mix, its settlement
+potential and a WHY breakdown of which factors are carrying it — including when
+crowding is holding it at zero. Hover a settlement for its trade, origin, age
+and standing.
 
 ## Terrain
 
@@ -182,7 +229,9 @@ browser
 | `sim/world.ts` | Orchestrates time, discovery, production, growth, levelling |
 | `sim/roadNetwork.ts` | The road graph: welding, splitting, junctions, Dijkstra routing |
 | `sim/terrain.ts` | Terrain grid, the cost table, water rules |
-| `sim/wear.ts` | The wear field: deposit, decay, sparse storage |
+| `sim/traffic.ts` | The ground's memory: wear, goods carried, decay |
+| `sim/settlement.ts` | Settlement entity, stages, trades and names |
+| `sim/settlementSystem.ts` | Scoring, potential, emergence. All tuning in one block |
 | `sim/geometry.ts` | Splines, intersections, polyline sampling |
 | `sim/systems.ts` | `TransportSystem` and `WorkforceSystem` |
 | `sim/village.ts` `villager.ts` `resourceNode.ts` | Entity state |
@@ -190,6 +239,7 @@ browser
 | `input/RoadDrawing.ts` | Freehand path capture and validity |
 | `render/*Layer.ts` | Terrain, influence, roads, sites, villagers, effects |
 | `render/DebugLayer.ts` | The D overlay: grid, costs, chosen routes |
+| `render/SettlementLayer.ts` | Huts, hamlets and halls, coloured by trade |
 | `ui/Hud.ts` | DOM HUD and inspection panels |
 
 `src/sim` imports nothing from Phaser. `World.update(delta)` advances the whole

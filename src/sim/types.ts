@@ -61,4 +61,5 @@ export type WorldEvent =
   | { type: 'villagerBorn'; at: Vec2 }
   | { type: 'levelUp'; at: Vec2; level: number }
   | { type: 'roadBuilt'; points: Vec2[] }
-  | { type: 'roadLost'; points: Vec2[] };
+  | { type: 'roadLost'; points: Vec2[] }
+  | { type: 'settlementFounded'; at: Vec2; name: string };

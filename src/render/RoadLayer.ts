@@ -95,7 +95,7 @@ export class RoadLayer {
         cum: cumulativeLengths(samples),
         // Start at the width the ground already justifies, so a road that is
         // split in two does not visibly flinch.
-        widths: Float32Array.from(samples, (p) => roadWidth(this.world.wear.at(p))),
+        widths: Float32Array.from(samples, (p) => roadWidth(this.world.traffic.wearAt(p))),
       };
       this.shapes.set(edge.id, shape);
     }
@@ -107,7 +107,7 @@ export class RoadLayer {
 
     for (const edge of this.world.network.edges) {
       const shape = this.shapeFor(edge);
-      const target = shape.samples.map((p) => roadWidth(this.world.wear.at(p)));
+      const target = shape.samples.map((p) => roadWidth(this.world.traffic.wearAt(p)));
       const smoothed = smooth(target);
 
       for (let i = 0; i < shape.widths.length; i++) {
@@ -188,7 +188,7 @@ export class RoadLayer {
     for (const node of this.world.network.nodes) {
       if (!node.isJunction || node.edges.length < 3) continue;
 
-      const width = roadWidth(this.world.wear.at(node.position));
+      const width = roadWidth(this.world.traffic.wearAt(node.position));
       g.fillStyle(COLORS.roadCasing, 0.28);
       g.fillCircle(node.position.x, node.position.y, width / 2 + 3.5);
       g.fillStyle(COLORS.road, 1);

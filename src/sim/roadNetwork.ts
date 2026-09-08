@@ -12,21 +12,25 @@ import {
   type Vec2,
 } from './geometry';
 import type { ResourceNode } from './resourceNode';
+import type { Settlement } from './settlement';
 import type { Village } from './village';
 
-export type Site = Village | ResourceNode;
+/** Anything a road can start or end at. */
+export type Site = Village | ResourceNode | Settlement;
 
 /** Distance under which two points are considered the same place. */
 const WELD_DISTANCE = 14;
 /** How close the cursor must be to a road to grab it. */
 export const ROAD_GRAB_DISTANCE = 18;
 const MIN_ROAD_LENGTH = 40;
+/** How far a place may sit from the road it grew on. */
+const PLACEMENT_REACH = 120;
 
 export class GraphNode {
   readonly id: number;
   readonly position: Vec2;
-  /** Set when this node is a village or resource node rather than a junction. */
-  readonly site: Site | null;
+  /** Set when something stands here rather than roads merely meeting. */
+  site: Site | null;
   readonly edges: RoadEdge[] = [];
 
   constructor(id: number, position: Vec2, site: Site | null) {
@@ -170,6 +174,32 @@ export class RoadNetwork {
     }
 
     return best;
+  }
+
+  /**
+   * Put a place onto an existing road: the road is split where the place
+   * stands and the resulting node stops being a plain junction, so routes run
+   * through it and new roads can be drawn to it. This is how a settlement
+   * joins the network it grew out of.
+   */
+  placeSiteOn(point: Vec2, site: Site): GraphNode | null {
+    let target: { edge: RoadEdge; index: number; t: number; point: Vec2 } | null = null;
+    let bestDistance = Infinity;
+
+    for (const edge of this.edges) {
+      const hit = closestPointOnPolyline(edge.points, point);
+      if (hit.distance < bestDistance) {
+        bestDistance = hit.distance;
+        target = { edge, index: hit.index, t: hit.t, point: hit.point };
+      }
+    }
+
+    if (!target || bestDistance > PLACEMENT_REACH) return null;
+
+    const node = this.splitEdgeAt(target.edge, target.index, target.t);
+    node.site = site;
+    this.version++;
+    return node;
   }
 
   // ---------------------------------------------------------------- building
