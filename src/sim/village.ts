@@ -1,83 +1,48 @@
+import { emptyAmounts } from './economy';
 import type { Vec2 } from './geometry';
-import { ResourceType, VillagerRole, type ResourceAmounts } from './types';
+import { Tier, TIER_INFLUENCE, TIER_WORKERS_PER_NODE, tierFor } from './tier';
+import { VillagerRole } from './types';
 import type { Villager } from './villager';
 
-export interface VillageLevel {
-  population: number;
-  influence: number;
-  /** How many villagers may staff a single resource node at this level. */
-  workersPerNode: number;
-  /** What the village must pay to reach this level. */
-  cost: ResourceAmounts | null;
-}
-
 /**
- * Level determines everything the player feels: how far the civilisation
- * reaches, how many people it can hold, and therefore how much of the network
- * it can actually operate.
+ * The first place. It is built the same way everything else on the map is:
+ * a population that rises and falls with how well it is fed, and a tier read
+ * straight off that number. It happens to keep its own roster of physical
+ * villagers rather than a bare headcount, because it always has — but there
+ * is no cost to pay and no rung to climb that a settlement does not also
+ * have.
  */
-export const VILLAGE_LEVELS: VillageLevel[] = [
-  { population: 5, influence: 480, workersPerNode: 1, cost: null },
-  { population: 8, influence: 660, workersPerNode: 1, cost: { wood: 8, food: 6 } },
-  { population: 13, influence: 800, workersPerNode: 2, cost: { wood: 20, food: 16, stone: 10 } },
-  {
-    population: 20,
-    influence: 900,
-    workersPerNode: 2,
-    cost: { wood: 40, food: 30, stone: 24, iron: 18 },
-  },
-  // Past this the village stops seeing further: opening up the country is the
-  // network's job now. What it keeps giving is hands to work the roads, which
-  // is what lets traffic stay thick as the network spreads.
-  {
-    population: 30,
-    influence: 900,
-    workersPerNode: 2,
-    cost: { wood: 80, food: 60, stone: 50, iron: 40 },
-  },
-  {
-    population: 42,
-    influence: 900,
-    workersPerNode: 2,
-    cost: { wood: 150, food: 120, stone: 100, iron: 80 },
-  },
-];
-
 export class Village {
   readonly name: string;
   readonly position: Vec2;
   readonly radius = 32;
 
-  level = 1;
-
-  readonly storage: Record<ResourceType, number> = {
-    [ResourceType.Wood]: 0,
-    [ResourceType.Iron]: 0,
-    [ResourceType.Stone]: 0,
-    [ResourceType.Food]: 0,
-  };
+  readonly storage = emptyAmounts();
+  /** Goods already dispatched here but not yet arrived. */
+  readonly incoming = emptyAmounts();
+  /** Rolling record of what has been arriving, per resource. */
+  readonly throughput = emptyAmounts();
 
   readonly villagers: Villager[] = [];
+  /** Where population is easing toward zero of; villagers are added or let go to match it. */
+  populationTarget: number;
 
   constructor(name: string, x: number, y: number) {
     this.name = name;
     this.position = { x, y };
+    this.populationTarget = 0;
   }
 
-  private get tier(): VillageLevel {
-    return VILLAGE_LEVELS[Math.min(this.level, VILLAGE_LEVELS.length) - 1];
-  }
-
-  get populationCap(): number {
-    return this.tier.population;
+  get tier(): Tier {
+    return tierFor(this.population);
   }
 
   get influenceRadius(): number {
-    return this.tier.influence;
+    return TIER_INFLUENCE[this.tier];
   }
 
   get workersPerNode(): number {
-    return this.tier.workersPerNode;
+    return TIER_WORKERS_PER_NODE[this.tier];
   }
 
   get population(): number {
@@ -99,25 +64,5 @@ export class Village {
   /** Everyone not permanently posted to a workplace is available logistics labour. */
   get labourPool(): number {
     return this.population - this.workerCount;
-  }
-
-  get isMaxLevel(): boolean {
-    return this.level >= VILLAGE_LEVELS.length;
-  }
-
-  get nextLevelCost(): ResourceAmounts | null {
-    return this.isMaxLevel ? null : VILLAGE_LEVELS[this.level].cost;
-  }
-
-  canAfford(cost: ResourceAmounts): boolean {
-    return Object.entries(cost).every(
-      ([resource, amount]) => this.storage[resource as ResourceType] >= (amount ?? 0),
-    );
-  }
-
-  spend(cost: ResourceAmounts): void {
-    for (const [resource, amount] of Object.entries(cost)) {
-      this.storage[resource as ResourceType] -= amount ?? 0;
-    }
   }
 }

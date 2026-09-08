@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import type { ResourceNode } from '../sim/resourceNode';
 import type { Site } from '../sim/roadNetwork';
+import { tierIndex, type Tier } from '../sim/tier';
 import { NodeState, SiteType } from '../sim/types';
 import type { World } from '../sim/world';
 import { COLORS, DEPTH, FONT_FAMILY, RESOURCE_COLORS, SITE_COLORS } from './theme';
@@ -22,7 +23,7 @@ export class SiteLayer {
   private readonly village: Phaser.GameObjects.Container;
   private readonly villageBody: Phaser.GameObjects.Graphics;
   private readonly villageRing: Phaser.GameObjects.Graphics;
-  private drawnLevel = 0;
+  private drawnTier: Tier | null = null;
   private villageScale = 1;
 
   private hovered: Site | null = null;
@@ -58,8 +59,8 @@ export class SiteLayer {
   update(dt: number): void {
     const k = 1 - Math.exp(-12 * dt);
 
-    if (this.drawnLevel !== this.world.village.level) {
-      this.drawnLevel = this.world.village.level;
+    if (this.drawnTier !== this.world.village.tier) {
+      this.drawnTier = this.world.village.tier;
       this.drawVillage();
     }
 
@@ -89,10 +90,9 @@ export class SiteLayer {
 
   // ------------------------------------------------------------------ village
 
-  /** The keep gains outbuildings as the settlement levels up. */
+  /** The keep gains outbuildings as the village grows into a bigger tier. */
   private drawVillage(): void {
     const g = this.villageBody;
-    const level = this.world.village.level;
     const r = this.world.village.radius;
 
     g.clear();
@@ -100,7 +100,7 @@ export class SiteLayer {
     g.fillCircle(2, 3.5, r + 2);
 
     // Outbuildings first, so the keep sits on top of them.
-    const houses = (level - 1) * 2;
+    const houses = tierIndex(this.world.village.tier) * 2;
     for (let i = 0; i < houses; i++) {
       const angle = -Math.PI / 2 + (i + 0.5) * ((Math.PI * 2) / Math.max(houses, 1));
       const hx = Math.cos(angle) * (r + 13);

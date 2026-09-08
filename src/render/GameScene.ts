@@ -4,6 +4,7 @@ import { PROTOTYPE_MAP } from '../sim/map';
 import type { Site } from '../sim/roadNetwork';
 import { World } from '../sim/world';
 import { Hud } from '../ui/Hud';
+import { SpeedControl } from '../ui/SpeedControl';
 import { CameraController } from './CameraController';
 import { DebugLayer } from './DebugLayer';
 import { FxLayer } from './FxLayer';
@@ -30,6 +31,7 @@ export class GameScene extends Phaser.Scene {
   private fx!: FxLayer;
   private debug!: DebugLayer;
   private hud!: Hud;
+  private speedControl!: SpeedControl;
 
   private readonly drawing = new RoadDrawing();
   /** True while the right button is sweeping roads off the map. */
@@ -55,6 +57,7 @@ export class GameScene extends Phaser.Scene {
     this.fx = new FxLayer(this);
     this.debug = new DebugLayer(this, this.world);
     this.hud = new Hud(this.world);
+    this.speedControl = new SpeedControl(document.getElementById('timescale')!);
 
     this.camera = new CameraController(this, this.world.width, this.world.height);
     this.camera.centerOn(this.world.village.position);
@@ -78,7 +81,11 @@ export class GameScene extends Phaser.Scene {
   override update(_time: number, delta: number): void {
     const dt = delta / 1000;
 
-    this.world.update(dt);
+    // Simulation speed runs the sim in extra steps of the same size rather
+    // than a few huge ones, so every timer and cooldown inside it still sees
+    // normal-sized ticks — nothing gets skipped, it just happens more often.
+    // Rendering stays on the real frame delta, so motion never looks jumpy.
+    for (let i = 0; i < this.speedControl.speed; i++) this.world.update(dt);
     this.fx.handle(this.world.drainEvents());
 
     this.camera.update(dt);

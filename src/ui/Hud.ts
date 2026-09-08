@@ -1,8 +1,18 @@
+import {
+  demandLevel,
+  demandPerMin,
+  destinationsFor,
+  economicActivity,
+  sustainablePopulation,
+  throughputPerMin,
+  type Trader,
+} from '../sim/economy';
 import type { Vec2 } from '../sim/geometry';
 import type { ResourceNode } from '../sim/resourceNode';
 import type { Site } from '../sim/roadNetwork';
-import { Settlement, SettlementStage, STAGE_LABELS } from '../sim/settlement';
+import { Settlement } from '../sim/settlement';
 import { TERRAIN_LABELS } from '../sim/terrain';
+import { TIER_LABELS } from '../sim/tier';
 import { dominantGood, TRACKED_GOODS, WEAR_FULL } from '../sim/traffic';
 import { NodeState, ResourceType, SiteType } from '../sim/types';
 import { Village } from '../sim/village';
@@ -26,39 +36,15 @@ const RESOURCE_ORDER = [
 /** Plain DOM HUD. Reads the world, never writes to it. */
 export class Hud {
   private readonly day = document.getElementById('hud-day')!;
-  private readonly villageName = document.getElementById('hud-village')!;
-  private readonly stats = document.getElementById('hud-stats')!;
-  private readonly resources = document.getElementById('hud-resources')!;
-  private readonly progress = document.getElementById('hud-progress')!;
   private readonly inspect = document.getElementById('inspect')!;
   private readonly hint = document.getElementById('hint')!;
 
   private hintFaded = false;
 
-  constructor(private readonly world: World) {
-    this.villageName.textContent = world.village.name.toUpperCase();
-  }
+  constructor(private readonly world: World) {}
 
   update(focused: Site | null, roadPoint: Vec2 | null): void {
-    const v = this.world.village;
-
     this.day.textContent = `DAY ${this.world.day}`;
-
-    this.stats.innerHTML = [
-      this.row('Population', `${v.population} / ${v.populationCap}`),
-      this.row('Workers', String(v.workerCount)),
-      this.row('Transporters', String(v.transporterCount)),
-      this.row('Available', String(v.idleCount)),
-      this.row('Influence', String(v.influenceRadius)),
-      this.row('Level', String(v.level)),
-      this.row('Settlements', String(this.world.settlements.length)),
-    ].join('');
-
-    this.resources.innerHTML = RESOURCE_ORDER.map((resource) =>
-      this.row(RESOURCE_LABELS[resource], String(v.storage[resource])),
-    ).join('');
-
-    this.progress.innerHTML = this.levelProgress();
 
     if (!this.hintFaded && this.world.network.edges.length > 0) {
       this.hintFaded = true;
@@ -66,22 +52,6 @@ export class Hud {
     }
 
     this.renderInspect(focused, roadPoint);
-  }
-
-  /** What the village still needs before it can grow again. */
-  private levelProgress(): string {
-    const v = this.world.village;
-    const cost = v.nextLevelCost;
-    if (!cost) return '<div class="note">The village has reached its peak.</div>';
-
-    const parts = Object.entries(cost).map(([resource, amount]) => {
-      const have = v.storage[resource as ResourceType];
-      const need = amount ?? 0;
-      const done = have >= need ? ' done' : '';
-      return `<span class="need${done}">${have}/${need} ${RESOURCE_LABELS[resource as ResourceType]}</span>`;
-    });
-
-    return `<div class="note">NEXT LEVEL</div><div class="needs">${parts.join('')}</div>`;
   }
 
   private renderInspect(site: Site | null, roadPoint: Vec2 | null): void {
@@ -114,16 +84,42 @@ export class Hud {
     const jobs = [...byRole.entries()]
       .map(([type, count]) => this.row(WORKER_LABELS[type], String(count)))
       .join('');
+    const sustainable = Math.round(sustainablePopulation(village));
 
     return `
       <div class="name">${village.name.toUpperCase()}</div>
-      <div class="meta">VILLAGE &middot; LEVEL ${village.level}</div>
+      <div class="meta">${TIER_LABELS[village.tier]}</div>
       <div class="stats">
-        ${this.row('Population', `${village.population} / ${village.populationCap}`)}
+        ${this.row('Population', `${village.population} <span class="note-inline">sustainable ~${sustainable}</span>`)}
         ${jobs}
         ${this.row('Available', String(village.idleCount))}
+        ${this.row('Transporters', String(village.transporterCount))}
         ${this.row('Influence', String(village.influenceRadius))}
-      </div>`;
+      </div>
+      <div class="divider"></div>
+      <div class="stats">${this.bar('Economy', economicActivity(village), true)}</div>
+      <div class="divider"></div>
+      ${this.traderStats(village)}`;
+  }
+
+  /**
+   * Supply and demand for one place — used for the village and every
+   * settlement alike, because as far as the economy is concerned they are
+   * the same kind of thing.
+   */
+  private traderStats(trader: Trader): string {
+    const rows = RESOURCE_ORDER.map((resource) => {
+      const supply = throughputPerMin(trader, resource);
+      const demand = demandPerMin(trader, resource);
+      const level = demandLevel(trader, resource);
+      const tag = level === 'NONE' || level === 'LOW' ? '' : ` <span class="need">${level}</span>`;
+      return this.row(
+        RESOURCE_LABELS[resource],
+        `${supply.toFixed(1)} <span class="note-inline">of ${demand.toFixed(1)}/min</span>${tag}`,
+      );
+    }).join('');
+
+    return `<div class="note">SUPPLY</div><div class="stats">${rows}</div>`;
   }
 
   private nodePanel(node: ResourceNode): string {
@@ -145,7 +141,34 @@ export class Hud {
         ${this.row('Ground', TERRAIN_LABELS[this.world.terrain.typeAt(node.position)])}
         ${route ? this.row('Route', `${Math.round(route.length)} &middot; ${tier}`) : this.row('Route', 'none')}
         ${route ? this.row('Going', `&times;${route.difficulty.toFixed(2)}`) : ''}
-      </div>`;
+      </div>
+      ${this.destinationsPanel(node)}`;
+  }
+
+  /** Where this node's goods are actually going, and who else would take them. */
+  private destinationsPanel(node: ResourceNode): string {
+    if (!node.isConnected) return '';
+
+    const options = destinationsFor(
+      node.resource,
+      this.world.traders,
+      (trader) => this.world.routeBetweenSites(node, trader),
+      this.world.traffic,
+    );
+    if (options.length === 0) return '';
+
+    const rows = options
+      .slice(0, 4)
+      .map((opt, i) => {
+        const mark = i === 0 ? ' <span class="need">CHOSEN</span>' : '';
+        return this.row(
+          opt.trader.name.toUpperCase(),
+          `${Math.round(opt.distance)} &middot; ${opt.demand}${mark}`,
+        );
+      })
+      .join('');
+
+    return `<div class="divider"></div><div class="note">DESTINATIONS</div><div class="stats">${rows}</div>`;
   }
 
   /**
@@ -216,24 +239,26 @@ export class Hud {
       ? `Heavy ${RESOURCE_LABELS[settlement.origin.resource].toLowerCase()} traffic`
       : 'Mixed trade on a busy road';
     const age = settlement.ageInDays(this.world.hours);
+    const sustainable = Math.round(sustainablePopulation(settlement));
 
     return `
       <div class="name">${settlement.name.toUpperCase()}</div>
-      <div class="meta">${STAGE_LABELS[settlement.stage]} &middot; ${settlement.trade.label.toUpperCase()}</div>
+      <div class="meta">${TIER_LABELS[settlement.tier]} &middot; ${settlement.trade.label.toUpperCase()}</div>
       <div class="stats">
-        ${this.row('Population', String(settlement.population))}
-        ${this.row('Trade', settlement.trade.label)}
+        ${this.row('Population', `${Math.round(settlement.population)} <span class="note-inline">sustainable ~${sustainable}</span>`)}
+        ${this.row('Specialization', settlement.trade.label)}
         ${this.row('Origin', origin)}
         ${this.row('Age', age === 1 ? '1 day' : `${age} days`)}
         ${settlement.influenceRadius > 0 ? this.row('Influence', String(settlement.influenceRadius)) : ''}
       </div>
       <div class="divider"></div>
-      <div class="stats">${this.bar('Standing', settlement.potential, true)}</div>
-      ${
-        settlement.stage === SettlementStage.Settlement
-          ? '<div class="note">A centre in its own right. Roads can be drawn from here.</div>'
-          : '<div class="note">Keep the traffic coming and it will grow.</div>'
-      }`;
+      <div class="stats">
+        ${this.bar('Economy', economicActivity(settlement), true)}
+        ${this.bar('Standing', settlement.potential, true)}
+      </div>
+      <div class="divider"></div>
+      ${this.traderStats(settlement)}
+      <div class="note">Grows or shrinks with what actually reaches it &mdash; the same rule Oakridge follows.</div>`;
   }
 
   // ------------------------------------------------------------------ pieces

@@ -40,6 +40,8 @@ export class ResourceNode {
   stored = 0;
   /** Units already promised to transporters currently en route. */
   claimed = 0;
+  /** Seconds this node has sat full with nobody coming to empty it. */
+  fullSince = 0;
 
   private productionTimer = 0;
 
@@ -82,6 +84,10 @@ export class ResourceNode {
   }
 
   produce(dt: number): number {
+    // Full and nobody is even on the way: a worker may step away and carry
+    // some off themselves rather than stand idle. See `workerDelivery.ts`.
+    this.fullSince = this.isFull && this.claimed === 0 ? this.fullSince + dt : 0;
+
     if (this.workers.length === 0 || this.isFull) {
       this.productionTimer = 0;
       return 0;

@@ -1,4 +1,5 @@
 import type { Vec2 } from './geometry';
+import type { Tier } from './tier';
 
 /** Everything that can occupy a spot on the map. */
 export enum SiteType {
@@ -59,7 +60,7 @@ export type WorldEvent =
   | { type: 'pickup'; at: Vec2; resource: ResourceType; amount: number }
   | { type: 'deposit'; at: Vec2; resource: ResourceType; amount: number }
   | { type: 'villagerBorn'; at: Vec2 }
-  | { type: 'levelUp'; at: Vec2; level: number }
+  | { type: 'tierUp'; at: Vec2; tier: Tier; name: string }
   | { type: 'roadBuilt'; points: Vec2[] }
   | { type: 'roadLost'; points: Vec2[] }
   | { type: 'settlementFounded'; at: Vec2; name: string };

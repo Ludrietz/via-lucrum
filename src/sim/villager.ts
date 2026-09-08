@@ -1,3 +1,4 @@
+import type { Trader } from './economy';
 import type { Vec2 } from './geometry';
 import type { ResourceNode } from './resourceNode';
 import type { Route } from './roadNetwork';
@@ -11,6 +12,16 @@ export const CARRY_CAPACITY = 3;
 export interface Cargo {
   resource: ResourceType;
   amount: number;
+}
+
+/** Which leg of a delivery round a transporter is currently walking. */
+export enum TransportLeg {
+  /** Village to the resource node. */
+  ToPickup = 'toPickup',
+  /** Resource node to wherever the goods are going. */
+  ToDestination = 'toDestination',
+  /** Back to the village, empty-handed, to rejoin the idle pool. */
+  Returning = 'returning',
 }
 
 /**
@@ -28,11 +39,18 @@ export class Villager {
   workplace: ResourceNode | null = null;
   /** Where a transporter is currently headed to collect from. */
   task: ResourceNode | null = null;
+  /** Where a transporter's cargo is bound for: the village, or a settlement. */
+  destination: Trader | null = null;
+  leg: TransportLeg = TransportLeg.ToPickup;
+  /**
+   * True while a worker has stepped away from a backed-up workplace to carry
+   * some of the backlog off themselves. They walk the same leg machinery as
+   * any transporter, but come home to their post instead of the village.
+   */
+  selfDelivering = false;
 
   route: Route | null = null;
   travelled = 0;
-  /** True while a transporter is on the leg back to the village. */
-  homebound = false;
   /** Units this transporter reserved at its task, so nobody double-books them. */
   claim = 0;
 
@@ -116,8 +134,10 @@ export class Villager {
     this.role = VillagerRole.Idle;
     this.state = VillagerState.Waiting;
     this.task = null;
+    this.destination = null;
+    this.leg = TransportLeg.ToPickup;
+    this.selfDelivering = false;
     this.cargo = null;
-    this.homebound = false;
     this.claim = 0;
     this.timer = 0;
     this.restAtHome();

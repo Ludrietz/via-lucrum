@@ -1,10 +1,15 @@
+import { emptyAmounts } from './economy';
 import { dist, type Vec2 } from './geometry';
+import { Tier, TIER_INFLUENCE, TIER_RADIUS, tierFor } from './tier';
 import { ResourceType } from './types';
 
 /**
- * How far along a place has come. Nothing is placed by the player; a spot on
- * the network works its way up this ladder, and slides back down it if the
- * traffic that made it interesting goes away.
+ * How far along a place has come toward being founded at all. Nothing is
+ * placed by the player; a spot on the network works its way up this ladder
+ * and slides back down it if the traffic that made it interesting goes away.
+ * Once founded, this stops mattering for how the place looks or behaves —
+ * that is population's job now, via `tier.ts`. It sticks around purely to
+ * decide *when* a candidate becomes a real settlement in the first place.
  */
 export enum SettlementStage {
   /** A candidate the simulation is watching. Not drawn. */
@@ -14,13 +19,6 @@ export enum SettlementStage {
   Hamlet = 'hamlet',
   Settlement = 'settlement',
 }
-
-export const STAGE_LABELS: Record<SettlementStage, string> = {
-  [SettlementStage.Site]: 'SITE',
-  [SettlementStage.Roadside]: 'ROADSIDE',
-  [SettlementStage.Hamlet]: 'HAMLET',
-  [SettlementStage.Settlement]: 'SETTLEMENT',
-};
 
 /** Potential at which each stage is reached. Tuning lives here. */
 export const STAGE_THRESHOLDS: ReadonlyArray<{ stage: SettlementStage; potential: number }> = [
@@ -100,13 +98,22 @@ export class Settlement {
   readonly foundedHours: number;
 
   name: string;
+  /** Still used to decide when a place is founded in the first place. */
   stage: SettlementStage;
   trade: Trade;
   /** 0..1, the same value the site was judged on; keeps moving after founding. */
   potential: number;
+  /** Continuously simulated, same as the village's — see `economy.ts`. */
   population = 1;
   /** What the traffic looked like when it first took hold. */
   readonly origin: { resource: ResourceType | null; share: number };
+
+  /** Goods on the shelf, exactly like a village's. */
+  readonly storage = emptyAmounts();
+  /** Goods already dispatched here but not yet arrived. */
+  readonly incoming = emptyAmounts();
+  /** Rolling record of what has been arriving, per resource. */
+  readonly throughput = emptyAmounts();
 
   constructor(params: {
     id: number;
@@ -130,32 +137,23 @@ export class Settlement {
     this.origin = params.origin;
   }
 
+  /** How big this place has grown, read straight off its population. */
+  get tier(): Tier {
+    return tierFor(this.population);
+  }
+
   /** Drawn size, and the hit target for drawing roads to it. */
   get radius(): number {
-    switch (this.stage) {
-      case SettlementStage.Settlement:
-        return 24;
-      case SettlementStage.Hamlet:
-        return 19;
-      default:
-        return 15;
-    }
+    return TIER_RADIUS[this.tier];
   }
 
   /**
    * How far this place makes the world legible. A hamlet is a modest second
-   * centre; a settlement is a real one. This is what turns the network into
+   * centre; a city is a real one. This is what turns the network into
    * something that opens up more of the map rather than only the first village.
    */
   get influenceRadius(): number {
-    switch (this.stage) {
-      case SettlementStage.Settlement:
-        return 900;
-      case SettlementStage.Hamlet:
-        return 620;
-      default:
-        return 0;
-    }
+    return TIER_INFLUENCE[this.tier];
   }
 
   ageInDays(nowHours: number): number {

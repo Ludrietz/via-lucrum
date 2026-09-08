@@ -1,3 +1,4 @@
+import { decayThroughput, easePopulation, sustainablePopulation, type Trader } from './economy';
 import { dist, type Vec2 } from './geometry';
 import { ResourceNode, type ResourceNodeConfig } from './resourceNode';
 import { RoadNetwork, type Anchor, type RoadEdge, type Route, type Site } from './roadNetwork';
@@ -6,18 +7,19 @@ import { dominantGood, TrafficField, WEAR_ON_BUILD, WEAR_PER_TRIP } from './traf
 import { Settlement, stageFor, tradeFor, type Trade } from './settlement';
 import { SettlementSystem, type Candidate, type Origin, type SettlementContext } from './settlementSystem';
 import { TransportSystem, WorkforceSystem, type SimContext } from './systems';
+import { Tier, tierIndex } from './tier';
 import { NodeState, ResourceType, type WorldEvent } from './types';
 import { Village } from './village';
 import { Villager } from './villager';
+import { WorkerDeliverySystem } from './workerDelivery';
 
 /** Seconds a drawn road takes to finish drawing itself in. */
 const ROAD_BUILD_TIME = 0.45;
 /** In-game hours per real second. */
 const HOURS_PER_SECOND = 1;
 const HOURS_PER_DAY = 24;
-/** Seconds between births, while there is food and room. */
-const BIRTH_INTERVAL = 9;
-const FOOD_PER_BIRTH = 3;
+/** Seconds between the village's population actually gaining or losing someone. */
+const POPULATION_STEP_INTERVAL = 9;
 /** Mean wear below which an unused road has faded back into the landscape. */
 const ABANDON_BELOW = 0.12;
 /** Seconds between sweeps for roads nobody is keeping up. */
@@ -51,6 +53,7 @@ export class World {
 
   private readonly transport = new TransportSystem();
   private readonly workforce = new WorkforceSystem();
+  private readonly workerDelivery = new WorkerDeliverySystem();
   private readonly emergence = new SettlementSystem();
 
   private events: WorldEvent[] = [];
@@ -58,8 +61,10 @@ export class World {
   private cachedVersion = -1;
   private nextVillagerId = 1;
   private nextSettlementId = 1;
-  private growthTimer = 0;
+  private populationTimer = 0;
   private pruneTimer = 0;
+  private villageTier: Tier;
+  private readonly settlementTiers = new Map<number, Tier>();
 
   constructor(config: WorldConfig) {
     this.width = config.width;
@@ -71,6 +76,10 @@ export class World {
     for (const cfg of config.nodes) this.nodes.push(new ResourceNode(cfg));
 
     for (let i = 0; i < config.startingPopulation; i++) this.addVillager();
+    // Nothing has been delivered yet, so start the target where the real
+    // headcount already is rather than easing it down to zero on day one.
+    this.village.populationTarget = config.startingPopulation;
+    this.villageTier = this.village.tier;
 
     this.revealNodes();
   }
@@ -88,6 +97,11 @@ export class World {
   /** Everything a road may start or end on right now. */
   get connectableSites(): Site[] {
     return [this.village, ...this.visibleNodes, ...this.settlements];
+  }
+
+  /** Everywhere goods can be delivered to. The village is not special here. */
+  get traders(): Trader[] {
+    return [this.village, ...this.settlements];
   }
 
   storage(resource: ResourceType): number {
@@ -111,6 +125,10 @@ export class World {
 
   anchorAt(point: Vec2): Anchor | null {
     return this.network.anchorAt(point, this.connectableSites);
+  }
+
+  routeBetweenSites(from: Site, to: Site): Route | null {
+    return this.network.routeBetween(from, to);
   }
 
   /** Roads cannot be laid across water; there are no bridges yet. */
@@ -161,13 +179,19 @@ export class World {
     const ctx = this.context();
     this.workforce.update(dt, ctx);
     this.transport.update(dt, ctx);
+    this.workerDelivery.update(dt, ctx);
 
     for (const node of this.nodes) node.produce(dt);
 
+    // Ongoing per-capita consumption is disabled for now: with production
+    // fixed, it competed with the village for the same stock it needs to
+    // grow. Revisit once nodes can grow their own output — until then demand
+    // still drives *where* goods go, it just doesn't also burn them.
+    // for (const trader of this.traders) consume(trader, dt);
+
     this.traffic.decay(dt);
     this.emergence.update(dt, this.settlementContext());
-    this.grow(dt);
-    this.tryLevelUp();
+    this.updatePopulation(dt);
 
     this.pruneTimer += dt;
     if (this.pruneTimer >= PRUNE_INTERVAL) {
@@ -242,7 +266,10 @@ export class World {
     return {
       village: this.village,
       nodes: this.nodes,
+      traders: this.traders,
+      traffic: this.traffic,
       routeTo: (node) => this.routeTo(node),
+      routeBetweenSites: (from, to) => this.network.routeBetween(from, to),
       costAt: (point) => this.terrain.costAt(point),
       recordTrip: (route, resource, amount) => this.recordTrip(route, resource, amount),
       emit: (event) => this.events.push(event),
@@ -293,38 +320,84 @@ export class World {
     }
   }
 
-  private grow(dt: number): void {
-    if (this.village.population >= this.village.populationCap) {
-      this.growthTimer = 0;
+  /**
+   * Population, for the village and every settlement alike: a rolling read of
+   * how much food is actually arriving eases each place's population toward
+   * what that could sustain, and tier is just whichever rung that number
+   * currently sits on. Nothing here is village-only — a settlement fed better
+   * than Oakridge grows faster than Oakridge, full stop.
+   */
+  private updatePopulation(dt: number): void {
+    for (const trader of this.traders) decayThroughput(trader, dt);
+
+    this.village.populationTarget = easePopulation(
+      this.village.populationTarget,
+      sustainablePopulation(this.village),
+      dt,
+    );
+    this.reconcileVillagePopulation(dt);
+
+    for (const settlement of this.settlements) {
+      settlement.population = Math.max(
+        1,
+        easePopulation(settlement.population, sustainablePopulation(settlement), dt),
+      );
+    }
+
+    this.checkTierChanges();
+  }
+
+  /** The village's headcount is real villagers, so it moves one at a time. */
+  private reconcileVillagePopulation(dt: number): void {
+    const target = Math.round(this.village.populationTarget);
+    if (this.village.population === target) {
+      this.populationTimer = 0;
       return;
     }
 
-    this.growthTimer += dt;
-    if (this.growthTimer < BIRTH_INTERVAL) return;
-    if (this.village.storage[ResourceType.Food] < FOOD_PER_BIRTH) return;
+    this.populationTimer += dt;
+    if (this.populationTimer < POPULATION_STEP_INTERVAL) return;
+    this.populationTimer = 0;
 
-    this.village.storage[ResourceType.Food] -= FOOD_PER_BIRTH;
-    this.growthTimer = 0;
-    const villager = this.addVillager();
-    this.events.push({ type: 'villagerBorn', at: { ...villager.position } });
+    if (this.village.population < target) {
+      const villager = this.addVillager();
+      this.events.push({ type: 'villagerBorn', at: { ...villager.position } });
+      return;
+    }
+
+    // Only someone not already out on the roads leaves — the population
+    // catches up with a shrinking food supply as people free up, not by
+    // yanking anyone off a delivery mid-stride.
+    const leaving = [...this.village.villagers].reverse().find((v) => v.isAvailable);
+    if (!leaving) return;
+    const index = this.village.villagers.indexOf(leaving);
+    this.village.villagers.splice(index, 1);
   }
 
-  private tryLevelUp(): void {
-    const cost = this.village.nextLevelCost;
-    if (!cost || !this.village.canAfford(cost)) return;
+  /** Fire a notification whenever a place actually climbs a rung, not drops one. */
+  private checkTierChanges(): void {
+    if (tierIndex(this.village.tier) > tierIndex(this.villageTier)) {
+      this.events.push({
+        type: 'tierUp',
+        at: { ...this.village.position },
+        tier: this.village.tier,
+        name: this.village.name,
+      });
+    }
+    this.villageTier = this.village.tier;
 
-    this.village.spend(cost);
-    this.village.level++;
-    this.events.push({
-      type: 'levelUp',
-      at: { ...this.village.position },
-      level: this.village.level,
-    });
-
-    this.revealNodes();
-    // New nodes may now be reachable, and older roads may already touch them.
-    this.cachedVersion = -1;
-    this.refreshRoutes();
+    for (const settlement of this.settlements) {
+      const previous = this.settlementTiers.get(settlement.id) ?? Tier.Hamlet;
+      if (tierIndex(settlement.tier) > tierIndex(previous)) {
+        this.events.push({
+          type: 'tierUp',
+          at: { ...settlement.position },
+          tier: settlement.tier,
+          name: settlement.name,
+        });
+      }
+      this.settlementTiers.set(settlement.id, settlement.tier);
+    }
   }
 
   // ------------------------------------------------------------ settlements

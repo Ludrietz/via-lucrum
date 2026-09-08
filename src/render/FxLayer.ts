@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import type { Vec2 } from '../sim/geometry';
+import { TIER_LABELS } from '../sim/tier';
 import type { WorldEvent } from '../sim/types';
 import { COLORS, DEPTH, FONT_FAMILY, RESOURCE_COLORS, RESOURCE_LABELS } from './theme';
 
@@ -40,9 +41,9 @@ export class FxLayer {
           this.floatingText(event.at, '+1 VILLAGER', COLORS.inkSoft, 20);
           break;
 
-        case 'levelUp':
+        case 'tierUp':
           this.pulse(event.at, 90, COLORS.influence, 1400);
-          this.floatingText(event.at, `LEVEL ${event.level}`, COLORS.ink, 56);
+          this.floatingText(event.at, `${event.name.toUpperCase()} IS NOW A ${TIER_LABELS[event.tier]}`, COLORS.ink, 56);
           break;
 
         case 'roadLost':

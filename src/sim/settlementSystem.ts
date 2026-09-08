@@ -4,7 +4,7 @@ import type { RoadNetwork } from './roadNetwork';
 import { Settlement, SettlementStage, stageFor, tradeFor, type Trade } from './settlement';
 import { TerrainType, type TerrainGrid } from './terrain';
 import { dominantGood, WEAR_FULL, type TrafficField } from './traffic';
-import type { ResourceType } from './types';
+import { ResourceType } from './types';
 import type { Village } from './village';
 
 /**
@@ -74,16 +74,6 @@ export const SETTLEMENT_TUNING = {
   minimumSpacing: 360,
   /** Crowding stops biting entirely at this distance. */
   comfortableSpacing: 640,
-
-  /** People per stage, approached slowly. */
-  populationCap: {
-    [SettlementStage.Site]: 0,
-    [SettlementStage.Roadside]: 3,
-    [SettlementStage.Hamlet]: 9,
-    [SettlementStage.Settlement]: 22,
-  } as Record<SettlementStage, number>,
-  /** Seconds per new resident while below the cap. */
-  growthInterval: 14,
 } as const;
 
 /** How willingly each kind of ground is built on. */
@@ -119,19 +109,12 @@ export class SettlementSystem {
   private readonly candidates = new Map<number, number>();
   private lastParts = new Map<number, Record<string, number>>();
   private sinceScan = 0;
-  private growthTimer = 0;
 
   update(dt: number, ctx: SettlementContext): void {
     this.sinceScan += dt;
     if (this.sinceScan >= SETTLEMENT_TUNING.scanInterval) {
       this.scan(this.sinceScan, ctx);
       this.sinceScan = 0;
-    }
-
-    this.growthTimer += dt;
-    if (this.growthTimer >= SETTLEMENT_TUNING.growthInterval) {
-      this.growthTimer = 0;
-      for (const settlement of ctx.settlements) this.grow(settlement);
     }
   }
 
@@ -320,11 +303,5 @@ export class SettlementSystem {
     const { resource, share } = dominantGood(ctx.traffic.goodsAtIndex(settlement.patch));
     const trade = tradeFor(resource, share);
     if (trade.key !== settlement.trade.key) settlement.trade = trade;
-  }
-
-  private grow(settlement: Settlement): void {
-    const cap = SETTLEMENT_TUNING.populationCap[settlement.stage];
-    if (settlement.population < cap) settlement.population++;
-    else if (settlement.population > cap) settlement.population--;
   }
 }

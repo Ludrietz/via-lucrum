@@ -1,7 +1,8 @@
 import Phaser from 'phaser';
 import type { Vec2 } from '../sim/geometry';
-import { SettlementStage, type Settlement } from '../sim/settlement';
+import type { Settlement } from '../sim/settlement';
 import type { Site } from '../sim/roadNetwork';
+import { Tier } from '../sim/tier';
 import type { World } from '../sim/world';
 import { COLORS, DEPTH, FONT_FAMILY, TRADE_COLORS } from './theme';
 
@@ -36,7 +37,7 @@ export class SettlementLayer {
     for (const settlement of this.world.settlements) {
       const view = this.views.get(settlement.id) ?? this.createView(settlement);
 
-      const key = `${settlement.stage}:${settlement.trade.key}:${settlement.name}`;
+      const key = `${settlement.tier}:${settlement.trade.key}:${settlement.name}`;
       if (key !== view.key) {
         view.key = key;
         this.draw(view);
@@ -82,24 +83,26 @@ export class SettlementLayer {
     const color = TRADE_COLORS[settlement.trade.key] ?? COLORS.inkSoft;
 
     body.clear();
-    view.label.setText(
-      settlement.stage === SettlementStage.Roadside ? '' : settlement.name.toUpperCase(),
-    );
+    view.label.setText(settlement.tier === Tier.Hamlet ? '' : settlement.name.toUpperCase());
     view.label.setY(settlement.radius + 12);
 
-    switch (settlement.stage) {
-      case SettlementStage.Roadside:
+    switch (settlement.tier) {
+      case Tier.Hamlet:
         // A hut set just off the verge: the first sign anyone stopped here.
         this.hut(body, { x: 11, y: -7 }, 7, color);
         break;
 
-      case SettlementStage.Hamlet:
+      case Tier.Village:
         this.hut(body, { x: -13, y: -9 }, 7.5, color);
         this.hut(body, { x: 6, y: -13 }, 7, color);
         this.hut(body, { x: 13, y: 5 }, 7.5, color);
         break;
 
-      case SettlementStage.Settlement:
+      // Town, City and Major City share the fuller cluster; the drawn size
+      // (and everything else about the place) keeps climbing with them.
+      case Tier.Town:
+      case Tier.City:
+      case Tier.MajorCity:
       default:
         this.hut(body, { x: -19, y: -8 }, 8, color);
         this.hut(body, { x: -6, y: -18 }, 7.5, color);
