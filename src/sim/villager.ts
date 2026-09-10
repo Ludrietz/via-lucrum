@@ -1,13 +1,15 @@
-import type { Trader } from './economy';
+import type { TradeSource, Trader } from './economy';
 import type { Vec2 } from './geometry';
+import type { Industry } from './industry';
 import type { ResourceNode } from './resourceNode';
 import type { Route } from './roadNetwork';
 import { ResourceType, VillagerRole, VillagerState } from './types';
-import type { Village } from './village';
 
 export const WALK_SPEED = 82;
 /** How much one villager can carry per trip. */
 export const CARRY_CAPACITY = 3;
+/** Share of every birth that grows up able to work — the rest are dependents. */
+export const WORKING_POPULATION_SHARE = 0.7;
 
 export interface Cargo {
   resource: ResourceType;
@@ -30,24 +32,42 @@ export enum TransportLeg {
  */
 export class Villager {
   readonly id: number;
-  readonly home: Village;
+  /**
+   * Wherever this person currently calls home — the founding village or a
+   * settlement, whichever they most recently settled at. Mutable: migration
+   * is just this changing once someone's finished walking somewhere better.
+   */
+  home: Trader;
+  /**
+   * Decided once, at birth, and permanent — roughly `WORKING_POPULATION_SHARE`
+   * of everyone never becomes a worker at all. This is the prototype's stand-in
+   * for an age structure: no children/elderly simulation, just a stable split
+   * so population growth doesn't translate one-for-one into labour capacity.
+   * Decided by whoever calls the constructor (see `World.addVillager`) against
+   * the *actual* running ratio, not a coin flip — a coin flip can unluckily
+   * leave a tiny starting population with no workers at all, which is a real
+   * softlock risk this game deliberately avoids everywhere else.
+   */
+  readonly isDependent: boolean;
 
   role: VillagerRole = VillagerRole.Idle;
   state: VillagerState = VillagerState.Waiting;
 
   /** Where a worker lives permanently, once it has arrived. */
   workplace: ResourceNode | null = null;
-  /** Where a transporter is currently headed to collect from. */
-  task: ResourceNode | null = null;
-  /** Where a transporter's cargo is bound for: the village, or a settlement. */
-  destination: Trader | null = null;
-  leg: TransportLeg = TransportLeg.ToPickup;
+  /** Same idea, for a worker posted to an industry instead of a resource node. */
+  industryWorkplace: Industry | null = null;
   /**
-   * True while a worker has stepped away from a backed-up workplace to carry
-   * some of the backlog off themselves. They walk the same leg machinery as
-   * any transporter, but come home to their post instead of the village.
+   * Where a transporter is currently headed to collect from — a resource
+   * node's production, or a trader's own surplus. The road network treats
+   * both the same way; this is the one place that has to know which it is.
    */
-  selfDelivering = false;
+  task: TradeSource | null = null;
+  /** Which good this trip is actually carrying, since `task` might not have just one. */
+  resource: ResourceType | null = null;
+  /** Where a transporter's cargo is bound for: the village, a settlement, or a node being invested in. */
+  destination: Trader | ResourceNode | null = null;
+  leg: TransportLeg = TransportLeg.ToPickup;
 
   route: Route | null = null;
   travelled = 0;
@@ -64,9 +84,10 @@ export class Villager {
   /** Stable scatter so idlers do not stack on the village centre. */
   readonly restOffset: Vec2;
 
-  constructor(id: number, home: Village) {
+  constructor(id: number, home: Trader, isDependent: boolean) {
     this.id = id;
     this.home = home;
+    this.isDependent = isDependent;
     this.position = { ...home.position };
 
     const angle = (id * 2.39996) % (Math.PI * 2);
@@ -74,8 +95,26 @@ export class Villager {
     this.restOffset = { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius * 0.7 };
   }
 
+  /**
+   * Not currently committed to anything — idle and not mid-walk — regardless
+   * of whether they're a worker at all. This is "safe to touch," not
+   * "eligible for a job"; a dependent is just as free to be counted here as
+   * anyone else not busy, which matters when population has to shrink (see
+   * `World.reconcilePopulation`) — removal must not be able to only ever
+   * take non-dependents, or a shrinking population drifts toward nothing
+   * but dependents and the labour force quietly vanishes.
+   */
+  get isFree(): boolean {
+    return this.role === VillagerRole.Idle && this.state !== VillagerState.Walking;
+  }
+
   get isAvailable(): boolean {
-    return this.role === VillagerRole.Idle;
+    // Idle but already walking means migrating to a new home — spoken for,
+    // even though `role` alone wouldn't show it. A dependent is free but
+    // never available for a job — they don't work, though they still
+    // migrate with everyone else (see `MigrationSystem`, which tracks idle
+    // time off `role` directly rather than `isAvailable`).
+    return this.isFree && !this.isDependent;
   }
 
   get isWalking(): boolean {
@@ -130,13 +169,33 @@ export class Villager {
     this.travelled = 0;
   }
 
+  /**
+   * The one place a villager becomes properly idle again — and so the one
+   * place that has to guarantee `workplace`/`industryWorkplace` are both
+   * clear. They used to survive a `release()` untouched, on the assumption
+   * that whatever hired this person next would only ever set the one field
+   * it cared about. That held right up until someone who'd once worked a
+   * resource node (say, a mine) later got hired into an industry instead:
+   * the industry hire set `industryWorkplace` but the mine's stale
+   * `workplace` reference lived on, so both fields read truthy at once and
+   * this one villager got processed by both `WorkforceSystem` and
+   * `IndustrySystem` every tick. The mine's own `incomingWorkers` count,
+   * bumped when it first dispatched this person, then never got decremented
+   * — nobody was ever coming to fill it, but nothing knew that — so the
+   * opening looked permanently filled and the mine sat unstaffed for good.
+   * "Idle" should just mean "holds no job"; enforcing that here, once, is
+   * simpler than trusting every future hire site to clean up a job it
+   * didn't know its target used to have.
+   */
   release(): void {
     this.role = VillagerRole.Idle;
     this.state = VillagerState.Waiting;
+    this.workplace = null;
+    this.industryWorkplace = null;
     this.task = null;
+    this.resource = null;
     this.destination = null;
     this.leg = TransportLeg.ToPickup;
-    this.selfDelivering = false;
     this.cargo = null;
     this.claim = 0;
     this.timer = 0;

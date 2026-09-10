@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { RoadDrawing } from '../input/RoadDrawing';
-import { PROTOTYPE_MAP } from '../sim/map';
+import { createWorldConfig, randomSeed } from '../sim/map';
 import type { Site } from '../sim/roadNetwork';
 import { World } from '../sim/world';
 import { Hud } from '../ui/Hud';
@@ -11,6 +11,7 @@ import { FxLayer } from './FxLayer';
 import { InfluenceLayer } from './InfluenceLayer';
 import { RoadLayer } from './RoadLayer';
 import { SettlementLayer } from './SettlementLayer';
+import { SettlementPotentialLayer } from './SettlementPotentialLayer';
 import { SiteLayer } from './SiteLayer';
 import { TerrainLayer } from './TerrainLayer';
 import { VillagerLayer } from './VillagerLayer';
@@ -24,6 +25,7 @@ export class GameScene extends Phaser.Scene {
   private camera!: CameraController;
   private terrainLayer!: TerrainLayer;
   private influence!: InfluenceLayer;
+  private settlementPotential!: SettlementPotentialLayer;
   private roads!: RoadLayer;
   private sites!: SiteLayer;
   private settlements!: SettlementLayer;
@@ -46,10 +48,13 @@ export class GameScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.world = new World(PROTOTYPE_MAP);
+    this.world = new World(createWorldConfig(resolveSeed()));
+    // eslint-disable-next-line no-console
+    console.log(`Via Lucrum — world seed ${this.world.seed} (append ?seed=${this.world.seed} to reproduce this map)`);
 
     this.terrainLayer = new TerrainLayer(this, this.world);
     this.influence = new InfluenceLayer(this, this.world);
+    this.settlementPotential = new SettlementPotentialLayer(this, this.world);
     this.roads = new RoadLayer(this, this.world);
     this.sites = new SiteLayer(this, this.world);
     this.settlements = new SettlementLayer(this, this.world);
@@ -67,6 +72,9 @@ export class GameScene extends Phaser.Scene {
     this.input.on(Phaser.Input.Events.POINTER_UP, this.onPointerUp, this);
     this.input.on(Phaser.Input.Events.GAME_OUT, () => this.cancelDrawing());
     this.input.keyboard?.on('keydown-D', () => this.debug.toggle());
+    for (let n = 1; n <= 6; n++) {
+      this.input.keyboard?.on(`keydown-${n}`, () => this.debug.setMode(n));
+    }
     // The right button erases, so the browser menu has to stay out of the way.
     this.input.mouse?.disableContextMenu();
 
@@ -91,6 +99,7 @@ export class GameScene extends Phaser.Scene {
     this.camera.update(dt);
     this.terrainLayer.update();
     this.influence.update(dt);
+    this.settlementPotential.update(dt);
     this.roads.update(dt);
     this.sites.update(dt);
     this.settlements.update(dt);
@@ -192,4 +201,20 @@ export class GameScene extends Phaser.Scene {
     const canvas = this.input.manager.canvas;
     if (canvas.style.cursor !== cursor) canvas.style.cursor = cursor;
   }
+}
+
+/**
+ * `?seed=12345` reproduces an exact world — point 23 of the brief, and the
+ * whole reason `WorldGenerator` is a pure function of one number in the
+ * first place. Anything else (missing, non-numeric) falls back to a fresh
+ * random one; the seed actually used is always logged to the console either
+ * way, so a map worth coming back to is never lost.
+ */
+function resolveSeed(): number {
+  const fromUrl = new URLSearchParams(window.location.search).get('seed');
+  if (fromUrl !== null) {
+    const parsed = Number(fromUrl);
+    if (Number.isFinite(parsed)) return Math.floor(parsed);
+  }
+  return randomSeed();
 }

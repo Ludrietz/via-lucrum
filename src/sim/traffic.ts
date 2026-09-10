@@ -28,6 +28,21 @@ export const WEAR_EPSILON = 0.02;
 /** Wear at which a road is as packed down as it gets. */
 export const WEAR_FULL = 4.5;
 
+/** Floor on how much a fully-packed road eases travel, relative to fresh ground. */
+const MIN_EFFORT = 0.6;
+
+/**
+ * How much less effort a stretch of ground takes to cross as it wears in:
+ * 1 on untouched ground, easing down to `MIN_EFFORT` once it's packed down
+ * as solid as it gets. This is what gives a highway an actual reason to
+ * exist beyond looking wider — the same road gets faster to walk the more
+ * it's used, and the pathfinder feels that too.
+ */
+export function wearEffort(wear: number): number {
+  const t = Math.max(0, Math.min(1, wear / WEAR_FULL));
+  return 1 - (1 - MIN_EFFORT) * t;
+}
+
 /**
  * Goods fade slower than ruts do. A route's economic character should outlive
  * a quiet afternoon, or nowhere would ever settle.
@@ -40,6 +55,9 @@ export const TRACKED_GOODS: readonly ResourceType[] = [
   ResourceType.Iron,
   ResourceType.Stone,
   ResourceType.Food,
+  ResourceType.Planks,
+  ResourceType.StoneBlocks,
+  ResourceType.Tools,
 ];
 
 export type GoodsTally = Record<ResourceType, number>;
@@ -50,6 +68,9 @@ function emptyTally(): GoodsTally {
     [ResourceType.Iron]: 0,
     [ResourceType.Stone]: 0,
     [ResourceType.Food]: 0,
+    [ResourceType.Planks]: 0,
+    [ResourceType.StoneBlocks]: 0,
+    [ResourceType.Tools]: 0,
   };
 }
 
@@ -74,6 +95,9 @@ export class TrafficField {
       [ResourceType.Iron]: new Float32Array(size),
       [ResourceType.Stone]: new Float32Array(size),
       [ResourceType.Food]: new Float32Array(size),
+      [ResourceType.Planks]: new Float32Array(size),
+      [ResourceType.StoneBlocks]: new Float32Array(size),
+      [ResourceType.Tools]: new Float32Array(size),
     };
   }
 

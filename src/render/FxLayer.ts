@@ -46,6 +46,11 @@ export class FxLayer {
           this.floatingText(event.at, `${event.name.toUpperCase()} IS NOW A ${TIER_LABELS[event.tier]}`, COLORS.ink, 56);
           break;
 
+        case 'nodeLevelUp':
+          this.pulse(event.at, 40, COLORS.village, 800);
+          this.floatingText(event.at, `${event.name.toUpperCase()} LEVEL ${event.level}`, COLORS.ink, 36);
+          break;
+
         case 'roadLost':
           this.fadingRoad(event.points);
           break;

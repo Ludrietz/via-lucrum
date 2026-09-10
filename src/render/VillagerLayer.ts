@@ -25,7 +25,7 @@ export class VillagerLayer {
 
   update(dt: number): void {
 
-    for (const villager of this.world.village.villagers) {
+    for (const villager of this.world.villagers) {
       const view = this.views.get(villager.id) ?? this.createView(villager);
 
       const key = this.appearanceKey(villager);

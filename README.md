@@ -103,9 +103,41 @@ and standing.
 
 ## Terrain
 
-The map is painted from a handful of broad shapes — forest, hills, a mountain
-massif, a river and a lake — which a 32px grid samples. What the player sees and
-what the simulation prices are the same shapes, so they cannot drift apart.
+The map is procedurally generated, not hand-painted: elevation, moisture,
+temperature and a short-wavelength detail layer are each an independently
+seeded coherent noise field (`sim/noise.ts`), sampled directly in world
+coordinates and combined into a terrain type plus a set of continuous
+characteristics — fertility, forest density, rockiness, wetness — so a hill
+can be forested and a forest can be fertile rather than one label excluding
+every other property (`sim/terrain.ts`). Generation happens in 1024-unit
+chunks, lazily and cached, entirely as a function of one world seed: the
+same seed always produces the same ground, and there is no upfront pass
+over a fixed-size map. `?seed=12345` in the URL reproduces an exact world;
+the seed in use is always logged to the console and shown in the debug
+panel.
+
+Resource nodes are a second, independent layer on top of the terrain, not
+the other way around — and they come in **deposits**, not one per cell. A
+sparse, heavily jittered lattice decides where a deposit might be (most
+cells hold nothing); the ones that do scatter two to five sites around a
+wandering centre, weighted by the terrain's characteristics under each site
+and by a broad "rich country / poor country" field, then filtered by a real
+minimum-spacing rule (`sim/worldgen.ts`). The intended shape is a handful of
+sites in reach at the start — food and wood — long genuinely empty
+stretches, and stone and iron far enough out that hauling them home is
+absurd and the answer is a settlement growing out there instead.
+
+Generation is driven by the **influence border** and nothing else, never by
+the camera: panning around is looking, not expanding. The world stays
+generated a fixed margin ahead of everywhere the civilisation reaches
+from — the village, every settlement, every connected node's own
+influence — so ground is always decided well before an influence ring
+arrives to reveal it. A freshly founded
+village gets a small, believable stockpile of food (and a little wood) and
+a strictly time-boxed grace period on its population target, so the first
+couple of minutes of a game are never an unavoidable starvation countdown;
+everywhere and everything else is left exactly as rich, sparse, or awkward
+as the seed made it.
 
 Terrain does not bend the roads you draw. It decides what they cost to cross:
 
@@ -139,10 +171,15 @@ out as soon as your line touches the river or the lake. There are no bridges yet
 
 Press **D** for the debug overlay: the terrain grid tinted and priced, each
 road's difficulty, and the route villagers currently choose to every connected
-site traced in red, with its one-way walking time.
+site traced in red, with its one-way walking time. With the overlay open, the
+number keys 1-6 switch what the grid shows — terrain/cost, elevation,
+moisture, fertility, forest density, overall resource potential — for tuning
+generation itself.
 
-Sites are placed for the shape of the network, not to match their ground —
-Ironhollow happens to be a mine in the hills, Millfield a farm on the flat.
+Sites are placed to match their ground, not the other way around: a mine
+sits in real hill or mountain country, a farm out on the open plain, because
+the terrain is generated first and resource placement reads it — see
+"Terrain" above.
 
 ## Drawing roads
 
@@ -228,14 +265,16 @@ browser
 | --- | --- |
 | `sim/world.ts` | Orchestrates time, discovery, production, growth, levelling |
 | `sim/roadNetwork.ts` | The road graph: welding, splitting, junctions, Dijkstra routing |
-| `sim/terrain.ts` | Terrain grid, the cost table, water rules |
+| `sim/terrain.ts` | Chunked, lazily-generated terrain field; the cost table, water rules |
+| `sim/noise.ts` | Seeded coherent (value) noise and fractal sums — no game knowledge |
+| `sim/worldgen.ts` | Resource weighting, node placement and spacing, starting-area guarantees |
 | `sim/traffic.ts` | The ground's memory: wear, goods carried, decay |
 | `sim/settlement.ts` | Settlement entity, stages, trades and names |
 | `sim/settlementSystem.ts` | Scoring, potential, emergence. All tuning in one block |
 | `sim/geometry.ts` | Splines, intersections, polyline sampling |
 | `sim/systems.ts` | `TransportSystem` and `WorkforceSystem` |
 | `sim/village.ts` `villager.ts` `resourceNode.ts` | Entity state |
-| `sim/map.ts` | The hand-placed map and its distance bands |
+| `sim/map.ts` | The world config factory — seed in, starting village and bounds out |
 | `input/RoadDrawing.ts` | Freehand path capture and validity |
 | `render/*Layer.ts` | Terrain, influence, roads, sites, villagers, effects |
 | `render/DebugLayer.ts` | The D overlay: grid, costs, chosen routes |

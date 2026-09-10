@@ -4,6 +4,18 @@ const MAX_ZOOM = 2.2;
 /** Comfortable working scale: a basin fills the view, not a kingdom. */
 const START_ZOOM = 0.85;
 const ZOOM_STEP = 0.0016;
+/**
+ * Smallest zoom the player can reach, full stop. Used to be derived from the
+ * map's own size — "however far out it takes to see the whole thing" — which
+ * made sense while the world was a small, fixed rectangle. Now that it's
+ * generated indefinitely outward (see `worldgen.ts`), "the whole world" has
+ * no meaningful size to fit on screen, and deriving a minimum from one
+ * anyway let the camera zoom out far enough to ask for the better part of a
+ * million terrain cells in a single view — see `DebugLayer`'s own guard
+ * against exactly that. A fixed floor is what "zoom out this far and no
+ * further" always actually meant.
+ */
+const MIN_ZOOM = 0.12;
 
 /**
  * Drag to pan, wheel to zoom towards the cursor. Zoom eases so the map never
@@ -22,16 +34,12 @@ export class CameraController {
 
   private minZoom: number;
 
-  constructor(
-    private readonly scene: Phaser.Scene,
-    private readonly worldWidth: number,
-    private readonly worldHeight: number,
-  ) {
+  constructor(private readonly scene: Phaser.Scene, worldWidth: number, worldHeight: number) {
     this.cam = scene.cameras.main;
     this.cam.setBounds(0, 0, worldWidth, worldHeight);
     this.cam.setBackgroundColor('#d9c9a3');
 
-    this.minZoom = this.coverZoom();
+    this.minZoom = MIN_ZOOM;
     // The map is far larger than the part anyone is working in, so open at a
     // readable scale over the village rather than fitting the whole country.
     const start = Phaser.Math.Clamp(START_ZOOM, this.minZoom, MAX_ZOOM);
@@ -43,13 +51,7 @@ export class CameraController {
     scene.scale.on(Phaser.Scale.Events.RESIZE, this.onResize, this);
   }
 
-  /** Smallest zoom that still keeps the paper covering the whole viewport. */
-  private coverZoom(): number {
-    return Math.max(this.cam.width / this.worldWidth, this.cam.height / this.worldHeight);
-  }
-
   private onResize(): void {
-    this.minZoom = this.coverZoom();
     if (this.targetZoom < this.minZoom) {
       this.targetZoom = this.minZoom;
       this.cam.setZoom(this.minZoom);

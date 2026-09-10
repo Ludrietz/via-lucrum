@@ -1,5 +1,5 @@
 import { destinationsFor, pledge } from './economy';
-import { NodeState, VillagerRole } from './types';
+import { VillagerRole, VillagerState } from './types';
 import { CARRY_CAPACITY, TransportLeg } from './villager';
 import type { SimContext } from './systems';
 
@@ -10,9 +10,17 @@ const CHECK_INTERVAL = 3;
 
 /**
  * The fallback for a workplace nobody is coming to empty: rather than stand
- * around with a full shed, one worker carries a load off themselves, then
- * comes back and picks their tools back up. They never become a real
- * transporter — this is a stopgap, not a second job.
+ * around with a full shed, one worker carries a load off themselves. They
+ * stay on the node's own roster the whole time they're out — `workplace`
+ * is never cleared and they're never spliced out of `node.workers` — so the
+ * post never reads as an opening while they're gone. It used to send them
+ * back through the general labour pool afterwards, on the idea that
+ * somewhere more short-handed should get first claim on them; in practice
+ * that just meant a second person was routinely hired into the same post
+ * while its actual worker was still walking the delivery, since nothing
+ * about "gone for a few minutes" should have looked like "the job is
+ * vacant." They resume the same post directly when they get back — see
+ * `TransportSystem`'s `resumePost`.
  */
 export class WorkerDeliverySystem {
   private cooldown = 0;
@@ -22,7 +30,11 @@ export class WorkerDeliverySystem {
     if (this.cooldown > 0) return;
 
     for (const node of ctx.nodes) {
-      if (node.fullSince < FULLNESS_GRACE || node.workers.length === 0 || node.available <= 0) continue;
+      if (node.fullSince < FULLNESS_GRACE || node.available <= 0) continue;
+      // Only someone actually standing at the post right now can step away
+      // from it — not a worker already mid-delivery from an earlier round.
+      const worker = node.workers.find((w) => w.role === VillagerRole.Worker && w.state === VillagerState.Working);
+      if (!worker) continue;
 
       const destinations = destinationsFor(
         node.resource,
@@ -36,15 +48,11 @@ export class WorkerDeliverySystem {
       const route = ctx.routeBetweenSites(node, destination);
       if (!route) continue;
 
-      const worker = node.workers[0];
-      node.workers.splice(0, 1);
-      if (node.workers.length === 0) node.state = NodeState.Connected;
-
       const amount = node.collect(Math.min(CARRY_CAPACITY, node.available));
 
       worker.role = VillagerRole.Transporter;
-      worker.selfDelivering = true;
       worker.task = node;
+      worker.resource = node.resource;
       worker.destination = destination;
       worker.leg = TransportLeg.ToDestination;
       worker.cargo = { resource: node.resource, amount };

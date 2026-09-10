@@ -1,5 +1,6 @@
 import { emptyAmounts } from './economy';
 import { dist, type Vec2 } from './geometry';
+import { Industry, IndustryType } from './industry';
 import { Tier, TIER_INFLUENCE, TIER_RADIUS, tierFor } from './tier';
 import { ResourceType } from './types';
 
@@ -103,8 +104,8 @@ export class Settlement {
   trade: Trade;
   /** 0..1, the same value the site was judged on; keeps moving after founding. */
   potential: number;
-  /** Continuously simulated, same as the village's — see `economy.ts`. */
-  population = 1;
+  /** Synced once a tick by `World` from the shared roster — see `World.populationAt`. */
+  population = 0;
   /** What the traffic looked like when it first took hold. */
   readonly origin: { resource: ResourceType | null; share: number };
 
@@ -112,8 +113,20 @@ export class Settlement {
   readonly storage = emptyAmounts();
   /** Goods already dispatched here but not yet arrived. */
   readonly incoming = emptyAmounts();
+  /** Surplus already promised to somewhere else, so it isn't offered twice. */
+  readonly outgoing = emptyAmounts();
   /** Rolling record of what has been arriving, per resource. */
   readonly throughput = emptyAmounts();
+  /** What tier is read off — see `development.ts`. Founded as a Hamlet, same as anywhere else. */
+  development = 0;
+  /** Running total, earned from industry output and selling surplus — see `economy.ts`'s wealth functions. */
+  wealth = 0;
+  /** Decaying accumulator behind `wealthIncomePerMin` — the same trick `throughput` uses. */
+  wealthIncome = 0;
+  /** Cumulative wood put toward housing — see `housing.ts` for what this actually unlocks. */
+  housingInvestment = 0;
+  /** One of each kind, present from the start; inert until staffed — see `industry.ts`. */
+  readonly industries: Industry[] = Object.values(IndustryType).map((type) => new Industry(type, this));
 
   constructor(params: {
     id: number;
@@ -137,9 +150,9 @@ export class Settlement {
     this.origin = params.origin;
   }
 
-  /** How big this place has grown, read straight off its population. */
+  /** How big this place has grown, read straight off its development. */
   get tier(): Tier {
-    return tierFor(this.population);
+    return tierFor(this.development, this.population);
   }
 
   /** Drawn size, and the hit target for drawing roads to it. */

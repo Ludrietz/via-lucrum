@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import { cumulativeLengths, resamplePolyline, type Vec2 } from '../sim/geometry';
 import type { RoadEdge } from '../sim/roadNetwork';
 import type { World } from '../sim/world';
-import { COLORS, DEPTH, roadWidth } from './theme';
+import { COLORS, DEPTH, roadCasingColor, roadColor, roadWidth } from './theme';
 
 export interface RoadPreview {
   points: Vec2[];
@@ -13,6 +13,8 @@ export interface RoadPreview {
 
 /** Distance between the points a road's width is measured at. */
 const SAMPLE_SPACING = 15;
+/** Samples per colour band, so a road can shade from paved to bare dirt along its own length. */
+const COLOR_BAND = 5;
 /** Wear moves slowly, so the widths only need refreshing a few times a second. */
 const REFRESH_INTERVAL = 0.2;
 
@@ -125,14 +127,39 @@ export class RoadLayer {
       const count = this.visibleSamples(edge, shape);
       if (count < 2) continue;
 
-      const points = shape.samples.slice(0, count);
-      const widths = Array.from(shape.widths.slice(0, count));
-
-      this.ribbon(g, points, widths, 4, COLORS.roadCasing, 0.16);
-      this.ribbon(g, points, widths, 0, COLORS.road, 0.95);
+      this.drawBandedRibbon(g, shape, count);
     }
 
     this.drawJunctions(g);
+  }
+
+  /**
+   * A road drawn in short, overlapping bands rather than one flat fill, so
+   * its colour can shade continuously with wear along its own length — dirt
+   * where it's barely used, gravel and then paved grey where traffic has
+   * packed it down — the same way its width already does per sample. Bands
+   * share their boundary sample so they sit edge to edge with no seam, and
+   * only the road's true start and end get a rounded cap.
+   */
+  private drawBandedRibbon(g: Phaser.GameObjects.Graphics, shape: EdgeShape, count: number): void {
+    for (let start = 0; start < count - 1; start += COLOR_BAND) {
+      const end = Math.min(count - 1, start + COLOR_BAND);
+      const points = shape.samples.slice(start, end + 1);
+      const widths = Array.from(shape.widths.slice(start, end + 1));
+      if (points.length < 2) continue;
+
+      let wearSum = 0;
+      for (const p of points) wearSum += this.world.traffic.wearAt(p);
+      const wear = wearSum / points.length;
+
+      const capStart = start === 0;
+      const capEnd = end === count - 1;
+
+      this.ribbon(g, points, widths, 4, roadCasingColor(wear), 0.16, capStart, capEnd);
+      this.ribbon(g, points, widths, 0, roadColor(wear), 0.95, capStart, capEnd);
+
+      if (capEnd) break;
+    }
   }
 
   /** How much of a road has finished drawing itself in. */
@@ -156,6 +183,8 @@ export class RoadLayer {
     grow: number,
     color: number,
     alpha: number,
+    capStart = true,
+    capEnd = true,
   ): void {
     const left: Phaser.Geom.Point[] = [];
     const right: Phaser.Geom.Point[] = [];
@@ -177,10 +206,13 @@ export class RoadLayer {
     g.fillStyle(color, alpha);
     g.fillPoints([...left, ...right.reverse()], true);
 
-    // Rounded ends.
-    g.fillCircle(points[0].x, points[0].y, (widths[0] + grow) / 2);
-    const last = points.length - 1;
-    g.fillCircle(points[last].x, points[last].y, (widths[last] + grow) / 2);
+    // Rounded ends — only where this band is the road's true start or end;
+    // an interior band boundary butts flush against its neighbour instead.
+    if (capStart) g.fillCircle(points[0].x, points[0].y, (widths[0] + grow) / 2);
+    if (capEnd) {
+      const last = points.length - 1;
+      g.fillCircle(points[last].x, points[last].y, (widths[last] + grow) / 2);
+    }
   }
 
   /** A soft marker where roads meet, sized by how busy the meeting is. */

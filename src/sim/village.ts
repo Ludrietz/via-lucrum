@@ -1,16 +1,15 @@
 import { emptyAmounts } from './economy';
 import type { Vec2 } from './geometry';
-import { Tier, TIER_INFLUENCE, TIER_WORKERS_PER_NODE, tierFor } from './tier';
-import { VillagerRole } from './types';
-import type { Villager } from './villager';
+import { Industry, IndustryType } from './industry';
+import { Tier, TIER_INFLUENCE, tierFor } from './tier';
 
 /**
  * The first place. It is built the same way everything else on the map is:
  * a population that rises and falls with how well it is fed, and a tier read
- * straight off that number. It happens to keep its own roster of physical
- * villagers rather than a bare headcount, because it always has — but there
- * is no cost to pay and no rung to climb that a settlement does not also
- * have.
+ * off how well it has kept itself in wood and stone — see `development.ts`.
+ * It owns none of its own population — that lives in `World`'s one shared
+ * roster, same as every settlement's — so there is nothing here a place that
+ * grew up on its own doesn't also have.
  */
 export class Village {
   readonly name: string;
@@ -20,49 +19,33 @@ export class Village {
   readonly storage = emptyAmounts();
   /** Goods already dispatched here but not yet arrived. */
   readonly incoming = emptyAmounts();
+  /** Surplus already promised to somewhere else, so it isn't offered twice. */
+  readonly outgoing = emptyAmounts();
   /** Rolling record of what has been arriving, per resource. */
   readonly throughput = emptyAmounts();
-
-  readonly villagers: Villager[] = [];
-  /** Where population is easing toward zero of; villagers are added or let go to match it. */
-  populationTarget: number;
+  /** What tier is read off — see `development.ts`. Starts at zero, a Hamlet, same as anywhere else. */
+  development = 0;
+  /** Synced once a tick by `World` from the shared roster — see `World.populationAt`. */
+  population = 0;
+  /** Running total, earned from industry output and selling surplus — see `economy.ts`'s wealth functions. */
+  wealth = 0;
+  /** Decaying accumulator behind `wealthIncomePerMin` — the same trick `throughput` uses. */
+  wealthIncome = 0;
+  /** Cumulative wood put toward housing — see `housing.ts` for what this actually unlocks. */
+  housingInvestment = 0;
+  /** One of each kind, present from the start; inert until staffed — see `industry.ts`. */
+  readonly industries: Industry[] = Object.values(IndustryType).map((type) => new Industry(type, this));
 
   constructor(name: string, x: number, y: number) {
     this.name = name;
     this.position = { x, y };
-    this.populationTarget = 0;
   }
 
   get tier(): Tier {
-    return tierFor(this.population);
+    return tierFor(this.development, this.population);
   }
 
   get influenceRadius(): number {
     return TIER_INFLUENCE[this.tier];
-  }
-
-  get workersPerNode(): number {
-    return TIER_WORKERS_PER_NODE[this.tier];
-  }
-
-  get population(): number {
-    return this.villagers.length;
-  }
-
-  get workerCount(): number {
-    return this.villagers.filter((v) => v.role === VillagerRole.Worker).length;
-  }
-
-  get transporterCount(): number {
-    return this.villagers.filter((v) => v.role === VillagerRole.Transporter).length;
-  }
-
-  get idleCount(): number {
-    return this.villagers.filter((v) => v.role === VillagerRole.Idle).length;
-  }
-
-  /** Everyone not permanently posted to a workplace is available logistics labour. */
-  get labourPool(): number {
-    return this.population - this.workerCount;
   }
 }

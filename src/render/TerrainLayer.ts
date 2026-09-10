@@ -1,11 +1,10 @@
 import Phaser from 'phaser';
 import type { Vec2 } from '../sim/geometry';
-import { TerrainType, type TerrainBrush } from '../sim/terrain';
-import { SiteType } from '../sim/types';
+import { CELL_SIZE, TERRAIN_CHUNK_SIZE, TerrainType } from '../sim/terrain';
 import type { World } from '../sim/world';
 import { COLORS, DEPTH } from './theme';
 
-/** Tiny deterministic PRNG so the map looks hand-drawn but never changes. */
+/** Tiny deterministic PRNG so a chunk's scatter looks hand-drawn but never changes. */
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
@@ -16,195 +15,109 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-/** How often a cell of each type gets a glyph, and how big it draws. */
-/** Side of one scatter tile, in world units. */
-const CHUNK_SIZE = 1024;
+const CELLS_PER_CHUNK = TERRAIN_CHUNK_SIZE / CELL_SIZE;
 
+const TERRAIN_FILL: Record<TerrainType, { color: number; alpha: number }> = {
+  [TerrainType.Plains]: { color: COLORS.plains, alpha: 0.14 },
+  [TerrainType.Forest]: { color: COLORS.forest, alpha: 0.24 },
+  [TerrainType.Hills]: { color: COLORS.hill, alpha: 0.26 },
+  [TerrainType.Mountains]: { color: COLORS.mountain, alpha: 0.34 },
+  [TerrainType.Water]: { color: COLORS.water, alpha: 0.4 },
+};
+
+/** How often a cell of each type gets a scatter glyph, and how big it draws. */
 const SCATTER: Partial<Record<TerrainType, { chance: number; size: number }>> = {
   [TerrainType.Forest]: { chance: 0.5, size: 7 },
   [TerrainType.Hills]: { chance: 0.3, size: 13 },
   [TerrainType.Mountains]: { chance: 0.75, size: 20 },
 };
 
+interface ChunkView {
+  gfx: Phaser.GameObjects.Graphics;
+  bounds: Phaser.Geom.Rectangle;
+}
+
 /**
- * The landscape, drawn once at boot.
- *
- * Washes come from the same brush shapes the grid was painted from, so regions
- * read as continuous country rather than squares; the scattered glyphs on top
- * are placed cell by cell, which keeps what the player sees honest about what
- * the pathfinder actually walks.
+ * The landscape, built one generated chunk at a time. There is no upfront
+ * "draw the whole map" pass any more — there is no whole map, only whatever
+ * ground the simulation has actually generated (see `TerrainField` and
+ * `WorldGenerator`) — so this layer just watches for newly generated chunks
+ * every frame and turns each one into its own small piece of drawn terrain
+ * the moment it appears, then leaves it alone forever after.
  */
 export class TerrainLayer {
-  /** Scatter is split into tiles so only what is on screen is ever drawn. */
-  private readonly chunks: Array<{ gfx: Phaser.GameObjects.Graphics; bounds: Phaser.Geom.Rectangle }> = [];
-  private readonly chunkCols: number;
+  private readonly chunks = new Map<string, ChunkView>();
 
-  constructor(private readonly scene: Phaser.Scene, world: World) {
-    const base = scene.add.graphics();
-    base.setDepth(DEPTH.terrain);
-
-    this.chunkCols = Math.ceil(world.width / CHUNK_SIZE);
-    const chunkRows = Math.ceil(world.height / CHUNK_SIZE);
-
-    for (let row = 0; row < chunkRows; row++) {
-      for (let col = 0; col < this.chunkCols; col++) {
-        this.chunks.push({
-          gfx: scene.add.graphics().setDepth(DEPTH.terrain),
-          bounds: new Phaser.Geom.Rectangle(col * CHUNK_SIZE, row * CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE),
-        });
-      }
-    }
-
-    this.draw(base, world);
+  constructor(private readonly scene: Phaser.Scene, private readonly world: World) {
+    this.sync();
   }
 
   /**
-   * Hide the tiles the camera cannot see. Phaser skips invisible objects
-   * entirely, which is what keeps a map this size affordable: the washes are a
-   * couple of dozen shapes, but the trees and peaks run to several thousand.
+   * Pick up any chunks generated since last frame, and hide whatever the
+   * camera can't see. Phaser skips invisible objects entirely, which is what
+   * keeps an unbounded world affordable: however far the civilisation has
+   * spread, only the handful of chunks actually on screen are ever drawn.
    */
   update(): void {
-    const view = this.scene.cameras.main.worldView;
+    this.sync();
 
-    for (const chunk of this.chunks) {
+    const view = this.scene.cameras.main.worldView;
+    for (const chunk of this.chunks.values()) {
       chunk.gfx.setVisible(Phaser.Geom.Rectangle.Overlaps(view, chunk.bounds));
     }
   }
 
-  private chunkAt(point: Vec2): Phaser.GameObjects.Graphics {
-    const col = Math.max(0, Math.min(this.chunkCols - 1, Math.floor(point.x / CHUNK_SIZE)));
-    const row = Math.max(0, Math.floor(point.y / CHUNK_SIZE));
-    return (this.chunks[row * this.chunkCols + col] ?? this.chunks[0]).gfx;
+  private sync(): void {
+    for (const { cx, cy } of this.world.terrain.drainNewChunks()) this.buildChunk(cx, cy);
   }
 
-  private draw(g: Phaser.GameObjects.Graphics, world: World): void {
-    const rand = mulberry32(20260908);
-    const { width: w, height: h } = world;
-    const grid = world.terrain;
+  private buildChunk(cx: number, cy: number): void {
+    const key = `${cx},${cy}`;
+    if (this.chunks.has(key)) return;
 
-    g.fillStyle(COLORS.parchment, 1);
-    g.fillRect(0, 0, w, h);
-    this.blotches(g, rand, w, h);
-    this.graticule(g, w, h);
+    const originCol = cx * CELLS_PER_CHUNK;
+    const originRow = cy * CELLS_PER_CHUNK;
+    const originX = originCol * CELL_SIZE;
+    const originY = originRow * CELL_SIZE;
 
-    // Land washes first, in the order the grid was painted.
-    for (const brush of grid.brushes) {
-      if (brush.type === TerrainType.Water) continue;
-      this.wash(g, brush);
-    }
+    const gfx = this.scene.add.graphics().setDepth(DEPTH.terrain);
+    // Seeded off the chunk's own coordinates and the world seed, so scatter
+    // is stable forever but never repeats identically chunk to chunk.
+    const rand = mulberry32((cx * 928_371 + cy * 1_299_721 + this.world.seed * 7) >>> 0);
 
-    this.fields(g, rand, world);
+    gfx.fillStyle(COLORS.parchment, 1);
+    gfx.fillRect(originX, originY, TERRAIN_CHUNK_SIZE, TERRAIN_CHUNK_SIZE);
 
-    for (const brush of grid.brushes) {
-      if (brush.type === TerrainType.Water) this.wash(g, brush);
-    }
+    for (let ly = 0; ly < CELLS_PER_CHUNK; ly++) {
+      for (let lx = 0; lx < CELLS_PER_CHUNK; lx++) {
+        const sample = this.world.terrain.sampleAtCell(originCol + lx, originRow + ly);
+        const worldX = originX + lx * CELL_SIZE;
+        const worldY = originY + ly * CELL_SIZE;
 
-    this.scatter(g, rand, world);
-    this.border(g, w, h);
-  }
+        const fill = TERRAIN_FILL[sample.type];
+        gfx.fillStyle(fill.color, fill.alpha);
+        gfx.fillRect(worldX, worldY, CELL_SIZE + 0.6, CELL_SIZE + 0.6);
 
-  /** A soft region of colour following one brush shape. */
-  private wash(g: Phaser.GameObjects.Graphics, brush: TerrainBrush): void {
-    const style = {
-      [TerrainType.Plains]: { color: COLORS.plains, alpha: 0.0 },
-      [TerrainType.Forest]: { color: COLORS.forest, alpha: 0.1 },
-      [TerrainType.Hills]: { color: COLORS.hill, alpha: 0.1 },
-      [TerrainType.Mountains]: { color: COLORS.mountain, alpha: 0.16 },
-      [TerrainType.Water]: { color: COLORS.water, alpha: 0.34 },
-    }[brush.type];
+        const scatter = SCATTER[sample.type];
+        if (!scatter || rand() > scatter.chance) continue;
 
-    if (style.alpha === 0) return;
-
-    if (brush.shape === 'ellipse') {
-      // Two passes: a wide faint skirt, then the body, so edges feather.
-      this.organicEllipse(g, brush, 1.16, style.color, style.alpha * 0.45);
-      this.organicEllipse(g, brush, 1, style.color, style.alpha);
-      return;
-    }
-
-    // Water is stroked in one pass; overlapping passes would darken the joins.
-    this.strokePath(g, brush.points, brush.width + 18, style.color, style.alpha * 0.4);
-    this.strokePath(g, brush.points, brush.width, style.color, style.alpha);
-  }
-
-  /**
-   * The brush shape with a wobbly rim. It stays within a few percent of the
-   * ellipse the grid was sampled from, but stops the map looking like it was
-   * drawn with a compass.
-   */
-  private organicEllipse(
-    g: Phaser.GameObjects.Graphics,
-    brush: Extract<TerrainBrush, { shape: 'ellipse' }>,
-    scale: number,
-    color: number,
-    alpha: number,
-  ): void {
-    const steps = 54;
-    const points: Phaser.Geom.Point[] = [];
-    const seed = brush.x * 0.013 + brush.y * 0.007;
-
-    for (let i = 0; i < steps; i++) {
-      const angle = (i / steps) * Math.PI * 2;
-      const wobble =
-        1 +
-        Math.sin(angle * 3 + seed) * 0.05 +
-        Math.sin(angle * 5 - seed * 2.3) * 0.035 +
-        Math.sin(angle * 8 + seed * 0.7) * 0.02;
-
-      points.push(
-        new Phaser.Geom.Point(
-          brush.x + Math.cos(angle) * brush.rx * scale * wobble,
-          brush.y + Math.sin(angle) * brush.ry * scale * wobble,
-        ),
-      );
-    }
-
-    g.fillStyle(color, alpha);
-    g.fillPoints(points, true);
-  }
-
-  private strokePath(
-    g: Phaser.GameObjects.Graphics,
-    points: Vec2[],
-    width: number,
-    color: number,
-    alpha: number,
-  ): void {
-    g.lineStyle(width, color, alpha);
-    g.beginPath();
-    g.moveTo(points[0].x, points[0].y);
-    for (let i = 1; i < points.length; i++) g.lineTo(points[i].x, points[i].y);
-    g.strokePath();
-  }
-
-  /** Glyphs placed from the grid itself, jittered so the cells never show. */
-  private scatter(_g: Phaser.GameObjects.Graphics, rand: () => number, world: World): void {
-    const grid = world.terrain;
-    const cell = grid.cellSize;
-    const sites = [world.village.position, ...world.nodes.map((n) => n.position)];
-
-    for (let row = 0; row < grid.rows; row++) {
-      for (let col = 0; col < grid.cols; col++) {
-        const type = grid.typeAtCell(col, row);
-        const style = SCATTER[type];
-        if (!style || rand() > style.chance) continue;
-
-        const centre = grid.cellCentre(col, row);
-        const at = {
-          x: centre.x + (rand() - 0.5) * cell * 1.1,
-          y: centre.y + (rand() - 0.5) * cell * 1.1,
+        const at: Vec2 = {
+          x: worldX + CELL_SIZE / 2 + (rand() - 0.5) * CELL_SIZE * 0.8,
+          y: worldY + CELL_SIZE / 2 + (rand() - 0.5) * CELL_SIZE * 0.8,
         };
-
-        // Keep the ground clear right around the sites, so glyphs stay readable.
-        if (sites.some((s) => Math.hypot(s.x - at.x, s.y - at.y) < 48)) continue;
-
-        const size = style.size * (0.7 + rand() * 0.6);
-        const chunk = this.chunkAt(at);
-        if (type === TerrainType.Forest) this.tree(chunk, at, size);
-        else if (type === TerrainType.Hills) this.hill(chunk, at, size);
-        else this.peak(chunk, at, size);
+        const size = scatter.size * (0.7 + rand() * 0.6);
+        if (sample.type === TerrainType.Forest) this.tree(gfx, at, size);
+        else if (sample.type === TerrainType.Hills) this.hill(gfx, at, size);
+        else this.peak(gfx, at, size);
       }
     }
+
+    this.faintGrid(gfx, originX, originY);
+
+    this.chunks.set(key, {
+      gfx,
+      bounds: new Phaser.Geom.Rectangle(originX, originY, TERRAIN_CHUNK_SIZE, TERRAIN_CHUNK_SIZE),
+    });
   }
 
   private tree(g: Phaser.GameObjects.Graphics, at: Vec2, s: number): void {
@@ -239,52 +152,9 @@ export class TerrainLayer {
     g.strokePath();
   }
 
-  /** Ploughed strips around the farms: site decoration, not terrain. */
-  private fields(g: Phaser.GameObjects.Graphics, rand: () => number, world: World): void {
-    for (const node of world.nodes) {
-      if (node.type !== SiteType.Farm) continue;
-
-      for (let i = 0; i < 11; i++) {
-        const x = node.position.x + (rand() - 0.5) * 380;
-        const y = node.position.y + (rand() - 0.5) * 240;
-        if (Math.hypot(x - node.position.x, y - node.position.y) < 52) continue;
-        if (world.terrain.typeAt({ x, y }) !== TerrainType.Plains) continue;
-
-        const w = 46 + rand() * 40;
-        const h = 26 + rand() * 18;
-        g.fillStyle(COLORS.field, 0.16);
-        g.fillRect(x - w / 2, y - h / 2, w, h);
-        g.lineStyle(1.5, COLORS.field, 0.5);
-        for (let s = -h / 2 + 4; s < h / 2; s += 6) {
-          g.lineBetween(x - w / 2 + 3, y + s, x + w / 2 - 3, y + s);
-        }
-      }
-    }
-  }
-
-  private blotches(
-    g: Phaser.GameObjects.Graphics,
-    rand: () => number,
-    w: number,
-    h: number,
-  ): void {
-    for (let i = 0; i < 60; i++) {
-      g.fillStyle(rand() > 0.5 ? COLORS.parchmentDark : COLORS.parchmentLight, 0.16);
-      g.fillEllipse(rand() * w, rand() * h, 260 + rand() * 560, 180 + rand() * 400);
-    }
-  }
-
-  private graticule(g: Phaser.GameObjects.Graphics, w: number, h: number): void {
-    g.lineStyle(1, COLORS.ink, 0.045);
-    for (let x = 200; x < w; x += 200) g.lineBetween(x, 0, x, h);
-    for (let y = 200; y < h; y += 200) g.lineBetween(0, y, w, y);
-  }
-
-  private border(g: Phaser.GameObjects.Graphics, w: number, h: number): void {
-    g.lineStyle(3, COLORS.ink, 0.32);
-    g.strokeRect(24, 24, w - 48, h - 48);
-    g.lineStyle(1, COLORS.ink, 0.22);
-    g.strokeRect(36, 36, w - 72, h - 72);
+  /** A whisper of a border round the chunk, so the eye has something to read besides colour changes. */
+  private faintGrid(g: Phaser.GameObjects.Graphics, x: number, y: number): void {
+    g.lineStyle(1, COLORS.ink, 0.03);
+    g.strokeRect(x, y, TERRAIN_CHUNK_SIZE, TERRAIN_CHUNK_SIZE);
   }
 }
-

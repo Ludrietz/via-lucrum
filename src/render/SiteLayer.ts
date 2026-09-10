@@ -1,9 +1,10 @@
 import Phaser from 'phaser';
 import type { ResourceNode } from '../sim/resourceNode';
 import type { Site } from '../sim/roadNetwork';
-import { tierIndex, type Tier } from '../sim/tier';
+import type { Tier } from '../sim/tier';
 import { NodeState, SiteType } from '../sim/types';
 import type { World } from '../sim/world';
+import { drawSettlementIcon } from './settlementIcons';
 import { COLORS, DEPTH, FONT_FAMILY, RESOURCE_COLORS, SITE_COLORS } from './theme';
 
 interface NodeView {
@@ -25,6 +26,8 @@ export class SiteLayer {
   private readonly villageRing: Phaser.GameObjects.Graphics;
   private drawnTier: Tier | null = null;
   private villageScale = 1;
+  /** How much of `world.nodes` already has a view — the rest keeps growing as generation reaches further out. */
+  private seenNodeCount = 0;
 
   private hovered: Site | null = null;
 
@@ -50,6 +53,7 @@ export class SiteLayer {
     this.village.add(label);
 
     for (const node of world.nodes) this.views.push(this.createNodeView(node));
+    this.seenNodeCount = world.nodes.length;
   }
 
   setHovered(site: Site | null): void {
@@ -57,6 +61,14 @@ export class SiteLayer {
   }
 
   update(dt: number): void {
+    // Generation keeps appending to `world.nodes` as the civilisation's
+    // reach grows (see `World.expandGeneration`) — nothing here ever
+    // removes from it, so picking up the tail each frame is enough to keep
+    // every newly generated node drawn.
+    for (; this.seenNodeCount < this.world.nodes.length; this.seenNodeCount++) {
+      this.views.push(this.createNodeView(this.world.nodes[this.seenNodeCount]));
+    }
+
     const k = 1 - Math.exp(-12 * dt);
 
     if (this.drawnTier !== this.world.village.tier) {
@@ -90,43 +102,16 @@ export class SiteLayer {
 
   // ------------------------------------------------------------------ village
 
-  /** The keep gains outbuildings as the village grows into a bigger tier. */
+  /**
+   * The village that grew here first — drawn by the exact same hut/hall
+   * cluster every settlement gets (see `settlementIcons.ts`). It's grown up
+   * a bigger tier ladder than any settlement has yet, purely because it had
+   * a head start; there is nothing about the building itself that's special.
+   */
   private drawVillage(): void {
     const g = this.villageBody;
-    const r = this.world.village.radius;
-
     g.clear();
-    g.fillStyle(COLORS.ink, 0.1);
-    g.fillCircle(2, 3.5, r + 2);
-
-    // Outbuildings first, so the keep sits on top of them.
-    const houses = tierIndex(this.world.village.tier) * 2;
-    for (let i = 0; i < houses; i++) {
-      const angle = -Math.PI / 2 + (i + 0.5) * ((Math.PI * 2) / Math.max(houses, 1));
-      const hx = Math.cos(angle) * (r + 13);
-      const hy = Math.sin(angle) * (r + 13);
-
-      g.fillStyle(COLORS.parchmentLight, 1);
-      g.fillRect(hx - 6, hy - 4, 12, 9);
-      g.lineStyle(2, COLORS.village, 1);
-      g.strokeRect(hx - 6, hy - 4, 12, 9);
-      g.fillStyle(COLORS.village, 1);
-      g.fillTriangle(hx - 7.5, hy - 4, hx + 7.5, hy - 4, hx, hy - 10);
-    }
-
-    g.fillStyle(COLORS.parchmentLight, 1);
-    g.fillCircle(0, 0, r);
-    g.lineStyle(5, COLORS.village, 1);
-    g.strokeCircle(0, 0, r);
-
-    // Keep with battlements.
-    g.fillStyle(COLORS.village, 1);
-    g.fillRect(-10, -4, 20, 14);
-    g.fillRect(-11, -10, 5, 7);
-    g.fillRect(-2.5, -10, 5, 7);
-    g.fillRect(6, -10, 5, 7);
-    g.fillStyle(COLORS.parchmentLight, 1);
-    g.fillRect(-2.5, 1, 5, 9);
+    drawSettlementIcon(g, this.world.village.tier, COLORS.village);
   }
 
   // -------------------------------------------------------------------- nodes

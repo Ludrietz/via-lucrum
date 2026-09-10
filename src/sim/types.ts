@@ -15,6 +15,9 @@ export enum ResourceType {
   Iron = 'iron',
   Stone = 'stone',
   Food = 'food',
+  Planks = 'planks',
+  StoneBlocks = 'stoneBlocks',
+  Tools = 'tools',
 }
 
 /**
@@ -61,6 +64,7 @@ export type WorldEvent =
   | { type: 'deposit'; at: Vec2; resource: ResourceType; amount: number }
   | { type: 'villagerBorn'; at: Vec2 }
   | { type: 'tierUp'; at: Vec2; tier: Tier; name: string }
+  | { type: 'nodeLevelUp'; at: Vec2; name: string; level: number }
   | { type: 'roadBuilt'; points: Vec2[] }
   | { type: 'roadLost'; points: Vec2[] }
   | { type: 'settlementFounded'; at: Vec2; name: string };

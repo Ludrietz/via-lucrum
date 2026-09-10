@@ -2,7 +2,7 @@ import { dist, type Vec2 } from './geometry';
 import type { ResourceNode } from './resourceNode';
 import type { RoadNetwork } from './roadNetwork';
 import { Settlement, SettlementStage, stageFor, tradeFor, type Trade } from './settlement';
-import { TerrainType, type TerrainGrid } from './terrain';
+import { TerrainType, type TerrainField } from './terrain';
 import { dominantGood, WEAR_FULL, type TrafficField } from './traffic';
 import { ResourceType } from './types';
 import type { Village } from './village';
@@ -14,7 +14,7 @@ import type { Village } from './village';
  */
 export interface SettlementContext {
   traffic: TrafficField;
-  terrain: TerrainGrid;
+  terrain: TerrainField;
   network: RoadNetwork;
   nodes: ResourceNode[];
   village: Village;
@@ -63,6 +63,14 @@ export const SETTLEMENT_TUNING = {
 
   /** Resource nodes closer than this make a place worth stopping at. */
   resourceRange: 520,
+  /**
+   * Below this much resource proximity, a place may accumulate potential
+   * from traffic and junctions alone but never actually founds — a spawn
+   * with no working resource nearby has no occupation to give anyone a
+   * reason to live there, and stays a ghost the moment it's built. See the
+   * `resources` term in `score()`.
+   */
+  minimumResourceProximity: 0.25,
   /**
    * A forest stays a forest and a mine stays a mine: nothing may take hold on
    * top of a resource site. This is a hard gate, not a penalty, or a busy road
@@ -284,6 +292,16 @@ export class SettlementSystem {
   // ---------------------------------------------------------------- emergence
 
   private tryFound(patch: number, position: Vec2, potential: number, ctx: SettlementContext): void {
+    // A place with nothing to actually do nearby has no reason for anyone
+    // to live there once it exists — heavy through-traffic and a good
+    // junction can carry a crossroads to full potential on their own, but
+    // that just produces a settlement with no local jobs, which stays
+    // permanently empty. Gate founding on the same `resources` term the
+    // score already computes, so every settlement is founded near real,
+    // nearby work.
+    const resources = this.lastParts.get(patch)?.resources ?? 0;
+    if (resources < SETTLEMENT_TUNING.minimumResourceProximity) return;
+
     const tally = ctx.traffic.goodsAtIndex(patch);
     const { resource, share } = dominantGood(tally);
     const trade = tradeFor(resource, share);

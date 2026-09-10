@@ -13,6 +13,7 @@ import {
 } from './geometry';
 import type { ResourceNode } from './resourceNode';
 import type { Settlement } from './settlement';
+import { wearEffort } from './traffic';
 import type { Village } from './village';
 
 /** Anything a road can start or end at. */
@@ -141,6 +142,18 @@ export class RoadNetwork {
 
   private nextNodeId = 1;
   private nextEdgeId = 1;
+  /**
+   * How worn a stretch of ground is, so routing can prefer a busy road over
+   * a fresher-but-shorter one. Set once by `World` after its traffic field
+   * exists — field-initializer ordering means it can't be passed in at
+   * construction — and defaults to "untouched" so a network with nothing
+   * wired up yet still routes purely on terrain, as before.
+   */
+  private wearAlong: (points: Vec2[]) => number = () => 0;
+
+  setWearLookup(fn: (points: Vec2[]) => number): void {
+    this.wearAlong = fn;
+  }
 
   // ------------------------------------------------------------------ lookup
 
@@ -424,6 +437,13 @@ export class RoadNetwork {
 
   /** Shortest route between two sites, following the actual road curves. */
   routeBetween(from: Site, to: Site): Route | null {
+    // A route from a place to itself is meaningless for dispatch — nobody
+    // has to walk anywhere — and `findRoute` treats start === goal as an
+    // already-solved search, which produces a route with no edges and too
+    // few points for anything that samples it. Callers already treat a
+    // null route as "nothing to do here", which is exactly right.
+    if (from === to) return null;
+
     const a = this.nodeForSite(from);
     const b = this.nodeForSite(to);
     if (!a || !b) return null;
@@ -452,8 +472,11 @@ export class RoadNetwork {
         if (closed.has(next)) continue;
 
         // Weighted by the ground, not the map: villagers take the road of
-        // least resistance, which may well be the longer one.
-        const cost = (best.get(current) ?? Infinity) + edge.resistance;
+        // least resistance, which may well be the longer one — and a road
+        // that's seen heavy traffic is genuinely easier going than a fresh
+        // one cut through the same terrain, so it can win out over a
+        // shorter but untouched alternative.
+        const cost = (best.get(current) ?? Infinity) + edge.resistance * wearEffort(this.wearAlong(edge.points));
         if (cost < (best.get(next) ?? Infinity)) {
           best.set(next, cost);
           cameFrom.set(next, { node: current, edge });
