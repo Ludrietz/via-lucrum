@@ -188,24 +188,9 @@ export class TerrainField {
 
   private readonly chunks = new Map<string, TerrainChunk>();
   private readonly cellsPerChunk = TERRAIN_CHUNK_SIZE / CELL_SIZE;
-  /** Chunks computed since the last `drainNewChunks` — what the renderer hasn't drawn yet. */
-  private freshChunks: Array<{ cx: number; cy: number }> = [];
 
   constructor(seed: number) {
     this.sampler = new TerrainSampler(seed);
-  }
-
-  /**
-   * Chunks generated since the last call, for whoever is responsible for
-   * turning generated data into something drawn (see `TerrainLayer`) — the
-   * same one-shot drain shape `World.drainEvents` already uses elsewhere.
-   * Terrain generation itself has no idea rendering exists; this is the one
-   * seam between the two, kept as small as possible.
-   */
-  drainNewChunks(): Array<{ cx: number; cy: number }> {
-    const out = this.freshChunks;
-    this.freshChunks = [];
-    return out;
   }
 
   private chunkAt(col: number, row: number): { cx: number; cy: number; lx: number; ly: number } {
@@ -232,7 +217,6 @@ export class TerrainField {
 
     chunk = { samples };
     this.chunks.set(key, chunk);
-    this.freshChunks.push({ cx, cy });
     return chunk;
   }
 

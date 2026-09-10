@@ -16,7 +16,7 @@ import { advanceHousing, housingCapacity } from './housing';
 import type { Industry } from './industry';
 import { ResourceNode } from './resourceNode';
 import { RoadNetwork, type Anchor, type RoadEdge, type Route, type Site } from './roadNetwork';
-import { TerrainField } from './terrain';
+import { TERRAIN_CHUNK_SIZE, TerrainField } from './terrain';
 import { dominantGood, TrafficField, WEAR_ON_BUILD, WEAR_PER_TRIP, wearEffort } from './traffic';
 import { WorldGenerator } from './worldgen';
 import { Settlement, stageFor, tradeFor, type Trade } from './settlement';
@@ -58,6 +58,22 @@ const STARTING_RESOURCE_REACH = 850;
 const GENERATION_MARGIN = 1200;
 /** How often the generation frontier is re-checked. Chunk decisions are cached, so a miss here just means a short delay, not wasted work. */
 const GENERATION_CHECK_INTERVAL = 3;
+/**
+ * How far a node the road network reaches opens the country around itself,
+ * before its own level adds anything — see `influenceCentres`. This is what
+ * keeps the frontier from ever closing: the player's one verb is drawing
+ * roads, so drawing one has to be able to reveal something.
+ *
+ * Sized against the gap between deposits rather than picked for feel.
+ * Deposits sit about `CLUSTER_CELL_SIZE` (1300) apart and their sites
+ * scatter a few hundred units either side of centre, so the typical gap
+ * between the nearest sites of neighbouring deposits is more like 700-800.
+ * At 620 a frontier node usually *couldn't* see the next deposit along, so
+ * chains dead-ended and expansion stalled at a hard ceiling even with roads
+ * still being built. This clears that gap most of the time without simply
+ * handing over the map.
+ */
+const CONNECTED_NODE_REACH = 780;
 /**
  * Seconds (this world's "hours" are 1:1 with real seconds — see
  * `HOURS_PER_SECOND`) the founding population is propped up regardless of
@@ -136,6 +152,9 @@ export class World {
    * someone who's actually working.
    */
   private dependentDebt = 0;
+  /** Ground the civilisation has uncovered, by chunk — what the renderer is allowed to draw. See `uncoverGround`. */
+  private readonly uncoveredChunks = new Set<string>();
+  private freshlyUncovered: Array<{ cx: number; cy: number }> = [];
   /** Starting headcount, kept around only to size the founding grace floor — see `updatePopulation`. */
   private foundingPopulation = 0;
   /** Counts down from `FOUNDING_GRACE_SECONDS`; the floor it guards disappears for good once this hits zero. */
@@ -219,6 +238,61 @@ export class World {
     const y1 = Math.min(this.height, centre.y + radius);
     const created = this.generator.ensureNodesGenerated(x0, y0, x1, y1);
     for (const cfg of created) this.nodes.push(new ResourceNode(cfg));
+
+    this.uncoverGround(centre, radius, x0, y0, x1, y1);
+  }
+
+  /**
+   * Fill in the ground the player can actually see, as a disc around a place
+   * the civilisation reaches from.
+   *
+   * This has to be its own deliberate pass, because "which chunks exist" is
+   * emphatically not the same question as "which chunks should be drawn".
+   * `TerrainField` answers any query by generating whatever chunk that query
+   * landed in, and plenty of queries land a long way from home — deposit
+   * placement samples the ground at cluster centres over a thousand units
+   * out, routing prices a road along its whole length. Drawing every chunk
+   * that happened to get generated therefore uncovered the map in scattered
+   * patches: ground four chunks away drawn because a deposit centre was
+   * sampled there, while a chunk directly beside the village stayed blank
+   * because nothing had needed to ask about it yet. Uncovering is a function
+   * of distance from the realm, so it gets computed from distance to the
+   * realm, rather than inferred from where the generator happened to poke.
+   */
+  private uncoverGround(centre: Vec2, radius: number, x0: number, y0: number, x1: number, y1: number): void {
+    const size = TERRAIN_CHUNK_SIZE;
+    const cx0 = Math.floor(x0 / size);
+    const cx1 = Math.floor(x1 / size);
+    const cy0 = Math.floor(y0 / size);
+    const cy1 = Math.floor(y1 / size);
+
+    for (let cy = cy0; cy <= cy1; cy++) {
+      for (let cx = cx0; cx <= cx1; cx++) {
+        const key = `${cx},${cy}`;
+        if (this.uncoveredChunks.has(key)) continue;
+
+        // Nearest point of the chunk to the centre, so the uncovered region
+        // follows the influence ring rather than its bounding box.
+        const nearestX = Math.max(cx * size, Math.min(centre.x, (cx + 1) * size));
+        const nearestY = Math.max(cy * size, Math.min(centre.y, (cy + 1) * size));
+        if (Math.hypot(nearestX - centre.x, nearestY - centre.y) > radius) continue;
+
+        this.uncoveredChunks.add(key);
+        this.terrain.ensureGenerated(cx * size, cy * size, (cx + 1) * size - 1, (cy + 1) * size - 1);
+        this.freshlyUncovered.push({ cx, cy });
+      }
+    }
+  }
+
+  /**
+   * Ground uncovered since the last call, for whoever draws it. Terrain
+   * generation has no idea rendering exists; this is the one seam between
+   * them, the same one-shot drain shape `drainEvents` uses.
+   */
+  drainUncoveredChunks(): Array<{ cx: number; cy: number }> {
+    const out = this.freshlyUncovered;
+    this.freshlyUncovered = [];
+    return out;
   }
 
   /**
@@ -237,9 +311,22 @@ export class World {
 
   /**
    * Everywhere the civilisation currently reaches from, and how far. The
-   * village, every settlement that has taken hold, and every connected node
-   * that has levelled up enough to open its own ground — a civilisation
-   * expands from all of them at once, not just from wherever it started.
+   * village, every settlement that has taken hold, and every node the road
+   * network actually reaches — a civilisation expands from all of them at
+   * once, not just from wherever it started.
+   *
+   * A *connected* node counts for `CONNECTED_NODE_REACH` whether or not it
+   * has levelled up yet, and that is the safeguard against the frontier
+   * closing. Previously a node opened ground only once its own level had
+   * earned it some (level one gives exactly zero), so reach grew only with
+   * tier — which needs development, which needs wealth, which needs the
+   * industries and deposits that are on the far side of the frontier you
+   * are trying to widen. A civilisation that plateaued below the next tier
+   * could reach nothing new ever again, and no amount of road-building
+   * helped, which is a miserable thing to be told by a game whose only verb
+   * is building roads. Now a road out to a working site opens the country
+   * around that site, so the player always has a move: reach a little
+   * further, and see a little further.
    */
   private influenceCentres(): Array<{ position: Vec2; reach: number }> {
     return [
@@ -247,9 +334,12 @@ export class World {
       ...this.settlements
         .filter((s) => s.influenceRadius > 0)
         .map((s) => ({ position: s.position, reach: s.influenceRadius })),
+      // Additive rather than whichever is larger: a node's own levelling-up
+      // should push the frontier further than merely connecting it did, or
+      // shipping investment out to a remote site buys nothing you can see.
       ...this.nodes
-        .filter((n) => n.isConnected && n.influenceRadius > 0)
-        .map((n) => ({ position: n.position, reach: n.influenceRadius })),
+        .filter((n) => n.isConnected)
+        .map((n) => ({ position: n.position, reach: CONNECTED_NODE_REACH + n.influenceRadius })),
     ];
   }
 

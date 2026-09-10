@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { UNEXPLORED_COLOR } from './render/CameraController';
 import { GameScene } from './render/GameScene';
 
 /**
@@ -8,7 +9,7 @@ import { GameScene } from './render/GameScene';
 const game = new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game',
-  backgroundColor: '#d9c9a3',
+  backgroundColor: UNEXPLORED_COLOR,
   antialias: true,
   scale: {
     mode: Phaser.Scale.NONE,

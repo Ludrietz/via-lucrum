@@ -16,6 +16,8 @@ const ZOOM_STEP = 0.0016;
  * further" always actually meant.
  */
 const MIN_ZOOM = 0.12;
+/** The colour of country nobody has been to yet. Shared with `main.ts`'s canvas clear so there's no seam at the edges. */
+export const UNEXPLORED_COLOR = '#c2b18d';
 
 /**
  * Drag to pan, wheel to zoom towards the cursor. Zoom eases so the map never
@@ -37,7 +39,13 @@ export class CameraController {
   constructor(private readonly scene: Phaser.Scene, worldWidth: number, worldHeight: number) {
     this.cam = scene.cameras.main;
     this.cam.setBounds(0, 0, worldWidth, worldHeight);
-    this.cam.setBackgroundColor('#d9c9a3');
+    // Ground the civilisation hasn't uncovered yet — see `World.uncoverGround`.
+    // Deliberately well darker than `COLORS.parchment`, which is what an
+    // uncovered chunk fills itself with: at only a few percent apart the two
+    // were near enough indistinguishable, so the frontier didn't read as a
+    // frontier at all and uncovering looked arbitrary rather than like
+    // something spreading out from the realm.
+    this.cam.setBackgroundColor(UNEXPLORED_COLOR);
 
     this.minZoom = MIN_ZOOM;
     // The map is far larger than the part anyone is working in, so open at a

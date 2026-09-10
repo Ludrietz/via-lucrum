@@ -33,11 +33,20 @@ export const NODE_LEVELS: readonly NodeLevelInfo[] = [
 /**
  * A level a node has earned by working, but can only actually reach once the
  * matching investment has been shipped in — see `NODE_UPGRADE_RESOURCE`
- * below. Same shape and scale as `NODE_LEVELS`'s thresholds on purpose: this
- * is meant to be a real competing claim on a transporter's time, not a
+ * below. Meant to be a real competing claim on a transporter's time, not a
  * rubber stamp that quietly rides along behind production.
+ *
+ * Roughly halved from its original [0, 25, 75, 180, 400] once it turned out
+ * the claim wasn't competing so much as losing outright: a trader wanting a
+ * good outbids investment whenever anyone is even slightly short, and with a
+ * dozen settlements each keeping a buffer somebody always is. Across a
+ * hundred in-game days *no node had ever received a single unit*, so no node
+ * had ever levelled, so worker capacity stayed at one everywhere and both
+ * settlement growth and the reveal frontier were pinned. `trade.ts` now
+ * prioritises visibly starved sites, and the first rung sits somewhere that
+ * trickle can actually reach.
  */
-export const INVESTMENT_THRESHOLDS: readonly number[] = [0, 25, 75, 180, 400];
+export const INVESTMENT_THRESHOLDS: readonly number[] = [0, 10, 35, 90, 200];
 
 /**
  * What a site needs shipped to it, on top of its own output, before it can
@@ -77,6 +86,18 @@ function levelForInvestment(invested: number): number {
 export function nodeLevelFor(cumulativeCollected: number, investedResource: number): NodeLevelInfo {
   const level = Math.min(levelForThreshold(cumulativeCollected), levelForInvestment(investedResource));
   return NODE_LEVELS[level - 1];
+}
+
+/**
+ * How many levels a node has already earned by being *worked* that its
+ * shipped-in investment hasn't paid for yet — the honest measure of a site
+ * being held back by logistics rather than by effort. Zero for a fresh node
+ * (it has earned nothing yet either), and it closes on its own the moment
+ * the materials actually arrive, which is what makes it safe to prioritise
+ * on: see `trade.ts`, where it stops investment being outbid forever.
+ */
+export function levelsHeldBackByInvestment(cumulativeCollected: number, investedResource: number): number {
+  return Math.max(0, levelForThreshold(cumulativeCollected) - levelForInvestment(investedResource));
 }
 
 export function isMaxNodeLevel(level: number): boolean {

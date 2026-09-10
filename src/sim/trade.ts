@@ -9,6 +9,7 @@ import {
   type TradeSource,
   type Trader,
 } from './economy';
+import { levelsHeldBackByInvestment } from './nodeLevel';
 import type { ResourceNode } from './resourceNode';
 import type { Route } from './roadNetwork';
 import { TRACKED_GOODS, type TrafficField } from './traffic';
@@ -28,6 +29,13 @@ const MIN_TRADE_UNIT = 2;
  * to a quarry's timbering budget.
  */
 const TRADER_COMFORTABLE = 0.05;
+/**
+ * How much each level a node has earned but not been paid for lifts its
+ * claim on a shipment — see the `starvation` term below. Set so a site held
+ * back by a single level competes with an ordinary trader shortage, and one
+ * held back by two or three beats it.
+ */
+const INVESTMENT_STARVATION_WEIGHT = 1.4;
 
 export interface Shipment {
   source: TradeSource;
@@ -162,8 +170,34 @@ export function findBestShipment(query: ShipmentQuery): Shipment | null {
         // civilisation-wide. A steep discount still lets a genuine shortage
         // elsewhere win almost every time, without permanently forbidding
         // the trip the moment things look briefly comfortable.
-        const relevancePenalty = (relevance.get(node.resource) ?? 0) > 0 ? 1 : 0.15;
-        const score = (0.6 + 0.5 * progress) * routeScore(route, query.traffic) * investmentPenalty * relevancePenalty;
+        // ...but a site that has visibly outrun its own investment is worth
+        // growing even while its output happens to be comfortable this
+        // minute, so being starved lifts the floor. Left flat at 0.15 this
+        // penalty was the dominant blocker in practice rather than the mild
+        // discount it reads as: in a well-fed civilisation almost *every*
+        // node's output is comfortable almost all the time, so almost every
+        // node was permanently cut to a sixth and investment never happened
+        // anywhere.
+        const heldBack = levelsHeldBackByInvestment(node.cumulativeCollected, node.investedResource);
+        const relevancePenalty =
+          (relevance.get(node.resource) ?? 0) > 0 ? 1 : Math.min(1, 0.15 + heldBack * 0.4);
+        // How badly this site is being held back by logistics rather than by
+        // effort — see `levelsHeldBackByInvestment`. Without this, investment
+        // simply never happened: a trader wanting a good scores
+        // `0.1 + 1.1 * shortage`, which beats investment's flat baseline
+        // whenever anyone is even slightly short, and with a dozen traders
+        // each keeping a buffer of stone somebody always is. Measured over a
+        // hundred in-game days, not one unit of investment had *ever* been
+        // delivered to any node: every site sat at level one with a lifetime
+        // haul of 50-165 units behind it, which in turn froze worker
+        // capacity, settlement growth and the reveal frontier all at once.
+        // Scaling by how far a node's earned level has outrun its paid-for
+        // one puts a demonstrably starved site ahead of an ordinary buffer
+        // top-up, and costs a fresh node nothing — it closes itself the
+        // moment the materials land.
+        const starvation = 1 + heldBack * INVESTMENT_STARVATION_WEIGHT;
+        const score =
+          (0.6 + 0.5 * progress) * starvation * routeScore(route, query.traffic) * investmentPenalty * relevancePenalty;
         if (winner && winner.score >= score) continue;
         winner = { destination: node, score, unmet };
       }
