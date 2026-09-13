@@ -3,9 +3,26 @@ import type { Vec2 } from './geometry';
 import type { Industry } from './industry';
 import type { ResourceNode } from './resourceNode';
 import type { Route } from './roadNetwork';
+import { DAYS_JOURNEY_METRES, HOURS_PER_DAY, METRES_PER_UNIT } from './scale';
 import { ResourceType, VillagerRole, VillagerState } from './types';
 
-export const WALK_SPEED = 82;
+/**
+ * How fast a villager covers open ground, in world units per in-game hour.
+ *
+ * Derived rather than chosen, so it cannot drift away from what the rest of
+ * the map means — see `scale.ts`. It was 82 for most of this project's life,
+ * which is a fifth of this, and the discrepancy only became visible when a
+ * map of a real place turned up: at 82 a villager managed a third of a
+ * kilometre an hour, or eight kilometres in a day, and a trip to the wood at
+ * the edge of the parish took the better part of a day each way. The economy
+ * was built on top of that, so nearly half the workforce was always out
+ * carrying — not because hauling is genuinely that dear at three kilometres,
+ * but because everyone was walking at the pace of a slow tortoise.
+ *
+ * Ground still has its say on top of this (`TERRAIN_COSTS`), as does the
+ * state of the road (`wearEffort`).
+ */
+export const WALK_SPEED = DAYS_JOURNEY_METRES / HOURS_PER_DAY / METRES_PER_UNIT;
 /** How much one villager can carry per trip. */
 export const CARRY_CAPACITY = 3;
 /** Share of every birth that grows up able to work — the rest are dependents. */

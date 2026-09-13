@@ -5,7 +5,7 @@ import {
   recordDelivery,
   recordWealth,
   shortage,
-  sustainablePopulation,
+  supportedByResource,
   unpledgeExport,
   unpledgeFrom,
   withdraw,
@@ -21,7 +21,7 @@ import { findBestShipment } from './trade';
 import { type TrafficField } from './traffic';
 import { NodeState, ResourceType, VillagerRole, VillagerState, type WorldEvent } from './types';
 import type { Village } from './village';
-import { TransportLeg, type Villager } from './villager';
+import { CARRY_CAPACITY, TransportLeg, WALK_SPEED, type Villager } from './villager';
 
 /** What the systems are allowed to see of the world. */
 export interface SimContext {
@@ -49,6 +49,10 @@ const UNLOAD_TIME = 1.0;
 const DISPATCH_INTERVAL = 0.7;
 /** How much worse a shortage has to be before it's worth pulling a worker off another job for. */
 const REASSIGN_MARGIN = 0.6;
+/** Idle hands per step up in how often loads set off — see `TransportSystem.dispatch`. */
+const WAITING_PER_CARAVAN = 4;
+/** Ceiling on that speed-up, so the dispatcher can never become a per-tick decision again. */
+const MAX_DISPATCH_RATE = 8;
 
 /**
  * Whichever idle villager would reach `target` most cheaply. Individuals
@@ -114,43 +118,91 @@ function worstShortage(traders: Trader[], resource: ResourceType): number {
 // maxed-out shortage of planks — could ever win a hand back. Scaling with
 // the *current* shortage instead means the bonus shrinks back down the
 // moment food genuinely recovers, so it can never get stuck the same way.
-// `FOOD_BASE_BONUS` alone still wins any tie and shrugs off a mild
-// disadvantage while comfortably fed (protecting against the tie-break
-// extinction this was first added for); `FOOD_FAMINE_WEIGHT` is what makes
-// a real famine — not just an ordinary shortage — reliably outrank
-// anything else in the civilisation, including another resource sitting at
-// its own worst possible shortage, rather than only nudging a close call.
-const FOOD_BASE_BONUS = 0.4;
-const FOOD_FAMINE_WEIGHT = 1.2;
+// The base bonus alone still wins any tie and shrugs off a mild
+// disadvantage while comfortably supplied (protecting against the tie-break
+// extinction this was first added for); `FAMINE_WEIGHT` is what makes a
+// real famine — not just an ordinary shortage — reliably outrank anything
+// else in the civilisation, including another resource sitting at its own
+// worst possible shortage, rather than only nudging a close call.
+//
+// Applied to both necessities now, not food alone. Population is gated on
+// grain *and* timber (see `economy.ts`'s `sustainablePopulation`), so a
+// civilisation freezing for want of firewood is exactly as fatal as one
+// starving, and the labour market has to be able to see both. Food keeps the
+// larger standing nudge — a hungry week bites sooner than a cold one — but a
+// real timber famine now outranks an ordinary food shortage, which is what
+// stops the two from taking turns starving each other.
+const NECESSITY_BASE_BONUS: Partial<Record<ResourceType, number>> = {
+  [ResourceType.Food]: 0.4,
+  [ResourceType.Wood]: 0.25,
+};
+const FAMINE_WEIGHT = 1.2;
 
 /**
- * How far civilisation-wide food *throughput* has fallen behind civilisation-
- * wide population — 0 once deliveries are keeping pace, up to 1 once
- * essentially nothing is arriving. This exists because `shortage()` alone
- * can miss a real famine entirely: raw food is deliberately never consumed
- * from storage (see `economy.ts`'s `consume` and `decayExcessStorage`), so
- * once a trader's shelf happens to be topped up, `shortage` reads
- * comfortable *forever*, even if every farm has since gone unstaffed and
- * throughput has flatlined — nothing ever depletes the storage that's
- * making the shortage look fine. `sustainablePopulation` (which actually
- * governs how many people the civilisation can support) doesn't have that
- * blind spot, since it reads the live delivery rate, not the shelf. Feeding
- * that signal into hiring priority too is what lets a farm win a worker
- * back before population has already crashed, instead of only after.
+ * How far a necessity's civilisation-wide *throughput* has fallen behind
+ * population — 0 once deliveries are keeping pace, up to 1 once
+ * essentially nothing is arriving.
+ *
+ * This was originally a workaround: raw food was never consumed from storage,
+ * so a topped-up shelf made `shortage` read comfortable forever even with
+ * every farm unstaffed, and throughput was the only signal that could still
+ * see the famine. Raw goods are genuinely eaten now (see `economy.ts`'s `consume`),
+ * so `shortage` is honest again and this is no longer covering for a blind
+ * spot — but it is kept because the two answer different questions and the
+ * difference matters. A shelf tells you where a place *is*; throughput tells
+ * you which way it is *heading*. Watching both is what lets a farm win a
+ * worker back while the larder is still half full, rather than after it has
+ * emptied and the population has already started falling.
  */
-function foodThroughputDeficit(traders: Trader[]): number {
+function throughputDeficit(traders: Trader[], resource: ResourceType): number {
   const totalPopulation = traders.reduce((sum, t) => sum + t.population, 0);
   if (totalPopulation === 0) return 0;
-  const totalSustainable = traders.reduce((sum, t) => sum + sustainablePopulation(t), 0);
-  return Math.max(0, Math.min(1, 1 - totalSustainable / totalPopulation));
+  // This good's *own* arrivals, not the civilisation's combined
+  // sustainability. Asking the combined question here deadlocks the labour
+  // market the moment the two necessities are short by different amounts: a
+  // timber famine drove the combined figure to zero, which maxed out the
+  // *food* bonus, so every spare hand went to a farm, so no forest was ever
+  // staffed, so the timber famine never ended. Observed running for a
+  // hundred and twenty days at a population of three, beside a full granary
+  // and forty-four connected deposits.
+  return Math.max(0, Math.min(1, 1 - supportedByResource(traders, resource) / totalPopulation));
 }
 
 /** How badly this opening's good is needed, civilisation-wide — shared between hiring and reassignment/rebalancing. */
 function laborPriority(traders: Trader[], resource: ResourceType): number {
   const s = worstShortage(traders, resource);
-  if (resource !== ResourceType.Food) return s;
-  const severity = Math.max(s, foodThroughputDeficit(traders));
-  return severity + FOOD_BASE_BONUS + severity * FOOD_FAMINE_WEIGHT;
+  const base = NECESSITY_BASE_BONUS[resource];
+  if (base === undefined) return s;
+  const severity = Math.max(s, throughputDeficit(traders, resource));
+  return severity + base + severity * FAMINE_WEIGHT;
+}
+
+/**
+ * How badly the civilisation wants another pair of hands *at this specific
+ * workplace* — which, for an industry, is not the same question as how badly
+ * it wants the industry's output.
+ *
+ * Shortage of the output alone gets industries catastrophically wrong. A
+ * processed good sits at shortage 1.0 at every place in the game until an
+ * industry is actually running, and stays there for as long as the industry
+ * is starved — so "how short are we of planks" reads *maximal* precisely
+ * when the sawmill has no wood, which is exactly when nobody should be sent
+ * to work at one. Labour poured into idle mills, the mills ate whatever raw
+ * material did arrive, and the shortage that justified them never closed:
+ * the classic unintended positive feedback, where a subsystem's own damage
+ * is what keeps feeding it.
+ *
+ * An industry's claim is therefore scaled by how spare its *input* is. A
+ * sawmill in a civilisation drowning in timber outranks nearly everything; a
+ * sawmill in one that is short of timber ranks below the forest that would
+ * fix that, which is both obviously correct and, mechanically, what lets the
+ * reassignment path (see `post`) pull a miller back out to the woods.
+ */
+function sitePriority(site: ResourceNode | Industry, traders: Trader[]): number {
+  const wanted = laborPriority(traders, site.resource);
+  if (!(site instanceof Industry)) return wanted;
+  const inputSpare = 1 - worstShortage(traders, site.recipe.input);
+  return wanted * inputSpare;
 }
 
 /**
@@ -247,23 +299,60 @@ function settlementBootstrapBonus(site: ResourceNode | Industry, traders: Trader
 }
 
 /**
- * How many working-age people have to stay free to physically carry goods,
- * civilisation-wide. Scales with the size of the workforce rather than
- * staying flat: a flat reserve was tuned for a founding population of a
- * handful, where several new nodes never open on the same day. At real
- * scale — several settlements each spawning a fresh, fully-unstaffed farm
- * and quarry around the same time — a flat reserve of 1 let almost every
- * free hand get promoted to a permanent worker in one burst, and nothing
- * ever demoted a worker back, so transport collapsed to 1-2 people and
- * never recovered for the rest of the game. Rounding (rather than a scaled
- * *floor*, which was tried and reverted for causing extinction at the tiny
- * starting population) keeps this identical to the old flat rule while the
- * population is small, and only grows the reserve once there's actually a
- * workforce to spare.
+ * How much of a haul the network the player drew actually is: how many pairs
+ * of hands it takes to keep what is being produced moving.
+ *
+ * This used to be a flat share of the workforce (15%, rounded). Two things
+ * are wrong with a share. It is arbitrary — nothing about "one in seven
+ * people" follows from anything in the world. And, worse, hiring stopped
+ * *exactly* at it, so the civilisation sat pinned to the floor forever: at
+ * forty-four people it ran seven carriers no matter whether the deposits
+ * were next door or half a map away, deliveries fell behind, and since
+ * population reads the delivery rate the whole thing quietly starved with
+ * every post filled.
+ *
+ * What actually decides how many carriers a civilisation needs is Little's
+ * law over the roads it has: goods appear at some rate, each round trip
+ * takes as long as the road makes it take, and one person can only be on one
+ * trip at a time. Deriving it that way makes road-building matter in the
+ * most direct possible sense — a shorter, better-placed road is fewer people
+ * spent walking and more people left to produce, which is the entire
+ * proposition of a game about drawing roads.
+ *
+ * Deliberately built from production *rate* and route *length* — properties
+ * of the geography and of who is posted where — rather than from the pile of
+ * uncollected goods, which is a consequence of the carrier count and would
+ * oscillate against it. (The same trap `MigrationSystem.workDraw` fell into
+ * and had to be pulled back out of.)
  */
-function logisticsReserveFor(workingTotal: number): number {
-  return Math.max(1, Math.round(workingTotal * 0.15));
+function haulageDemand(ctx: SimContext): number {
+  let needed = 0;
+
+  for (const node of ctx.nodes) {
+    if (!node.isConnected) continue;
+    const rate = node.productionRate;
+    if (rate <= 0) continue;
+
+    // Straight-line to whoever would receive it, marked up for the fact that
+    // no road runs straight. Cheap on purpose: this is consulted every tick,
+    // and pricing a real route per node per tick buys precision the answer
+    // does not need.
+    const home = nearestTrader(node.position, ctx.traders);
+    const oneWay = (dist(node.position, home.position) * ROUTE_DETOUR) / WALK_SPEED;
+    const roundTrip = 2 * oneWay + LOAD_TIME + UNLOAD_TIME;
+    needed += (rate * roundTrip) / CARRY_CAPACITY;
+  }
+
+  const workingTotal = ctx.villagers.filter((v) => !v.isDependent).length;
+  // A ceiling, or a civilisation with a long supply line would put literally
+  // everyone on the road and produce nothing for them to carry.
+  return Math.max(1, Math.min(Math.round(needed), Math.floor(workingTotal * MAX_LOGISTICS_SHARE)));
 }
+
+/** How much longer a real road is than the straight line it approximates. */
+const ROUTE_DETOUR = 1.3;
+/** No more than this share of the workforce may ever be out carrying. */
+const MAX_LOGISTICS_SHARE = 0.5;
 
 /**
  * Turns idle villagers into transporters and runs their delivery rounds.
@@ -289,6 +378,25 @@ export class TransportSystem {
   private dispatch(ctx: SimContext): void {
     if (this.cooldown > 0) return;
     if (!ctx.villagers.some((v) => v.isAvailable)) return;
+
+    // Charged up front, not only on success. `findBestShipment` prices every
+    // source against every destination — routes included — so it is by far
+    // the most expensive decision in the game, and when it comes back empty
+    // (which it does constantly, since a civilisation with nothing worth
+    // moving is the *normal* state) it used to be re-asked on every single
+    // tick. Answering a question this heavy more often than a villager could
+    // possibly act on it buys nothing.
+    //
+    // How long the gap is scales with how many people are actually standing
+    // about waiting for work. A flat interval is a global serial queue: one
+    // load leaves every 0.7 seconds no matter how big the civilisation gets,
+    // which put a hard ceiling of a few hundred units a minute on *all* trade
+    // everywhere — a ceiling two hundred residents comfortably outgrew, at
+    // which point eighty of them simply stood idle while the shelves emptied
+    // around them. The interval exists so a village's carriers don't set off
+    // in one clump, and a busier place genuinely does send more of them.
+    const waiting = ctx.villagers.reduce((n, v) => n + (v.isAvailable ? 1 : 0), 0);
+    this.cooldown = DISPATCH_INTERVAL / Math.max(1, Math.min(MAX_DISPATCH_RATE, waiting / WAITING_PER_CARAVAN));
 
     const shipment = findBestShipment({
       nodes: ctx.nodes,
@@ -316,7 +424,6 @@ export class TransportSystem {
     if (shipment.source instanceof ResourceNode) shipment.source.claimed += idle.claim;
     else pledgeExport(shipment.source, shipment.resource, idle.claim);
     pledgeTo(shipment.destination, shipment.resource, idle.claim);
-    this.cooldown = DISPATCH_INTERVAL;
   }
 
   private step(villager: Villager, dt: number, ctx: SimContext): void {
@@ -498,9 +605,8 @@ export class WorkforceSystem {
   private rebalance(ctx: SimContext): void {
     if (ctx.villagers.some((v) => v.isAvailable)) return;
 
-    const workingTotal = ctx.villagers.filter((v) => !v.isDependent).length;
     const totalTransporters = ctx.villagers.filter((v) => v.role === VillagerRole.Transporter).length;
-    if (totalTransporters >= logisticsReserveFor(workingTotal)) return;
+    if (totalTransporters >= haulageDemand(ctx)) return;
 
     const staffedNodes = ctx.nodes.filter((n) => n.workers.some(isAtPost));
     const staffedIndustries = ctx.industries.filter((ind) => ind.workers.some(isAtPost));
@@ -512,7 +618,7 @@ export class WorkforceSystem {
     // into one if there's truly nowhere else to pull from.
     const notBootstrapping = allStaffed.filter((s) => settlementBootstrapBonus(s, ctx.traders) === 0);
     const pool = notBootstrapping.length > 0 ? notBootstrapping : allStaffed;
-    const donor = pool.sort((a, b) => laborPriority(ctx.traders, a.resource) - laborPriority(ctx.traders, b.resource))[0];
+    const donor = pool.sort((a, b) => sitePriority(a, ctx.traders) - sitePriority(b, ctx.traders))[0];
     if (!donor) return;
 
     const worker = donor.workers.find(isAtPost);
@@ -555,7 +661,26 @@ export class WorkforceSystem {
     // already gone. A population floor doesn't have that loop: a place
     // too small to spare anyone simply never runs an industry, however
     // briefly comfortable its shelves look.
-    const INDUSTRY_POPULATION_FLOOR = 15;
+    //
+    // Sized against what a workshop is, not against what a civilisation is.
+    // This was 15, a *per-place* headcount, in a game whose entire design
+    // spreads its population across many small places: measured at day 111
+    // on seed 1234, a healthy civilisation of thirty-four people across five
+    // places had a mean population of under seven, and *zero* of the five
+    // cleared the floor. Worse, the loop ran the wrong way — every new
+    // settlement a prospering realm founded divided the population further,
+    // so succeeding made industry strictly less likely, forever. A gate that
+    // gets harder to pass the better the game goes is not a safety rail, it
+    // is an off switch.
+    //
+    // The thing the floor is actually protecting — "don't pull the last
+    // farmer into the mill" — is already handled, and handled better, by
+    // `openingScore` below: every raw-resource opening is ranked against
+    // every industry opening by live civilisation-wide need, so a place
+    // short of food staffs the farm first by construction. This only has to
+    // answer the much smaller question the sort cannot: is this place a
+    // village at all, or a pair of huts with no business hosting a workshop?
+    const INDUSTRY_POPULATION_FLOOR = 6;
 
     const nodeOpenings = ctx.nodes.filter((n) => n.isConnected && n.workers.length + n.incomingWorkers < n.workerCapacity);
     const industryOpenings = ctx.industries.filter(
@@ -566,12 +691,12 @@ export class WorkforceSystem {
     );
     const openings: (ResourceNode | Industry)[] = [...nodeOpenings, ...industryOpenings];
     if (openings.length === 0) return;
-    const priority = (resource: ResourceType) => laborPriority(ctx.traders, resource);
+    const priority = (site: ResourceNode | Industry) => sitePriority(site, ctx.traders);
     // Which specific opening wins also weighs whether it would give a
     // still-empty settlement its first residents, not just which resource
     // is shortest civilisation-wide — see `settlementBootstrapBonus`.
     const openingScore = (site: ResourceNode | Industry) =>
-      priority(site.resource) + settlementBootstrapBonus(site, ctx.traders);
+      priority(site) + settlementBootstrapBonus(site, ctx.traders);
     openings.sort((a, b) => openingScore(b) - openingScore(a));
     const target = openings[0];
     const targetSite = target instanceof Industry ? target.owner : target;
@@ -592,10 +717,12 @@ export class WorkforceSystem {
       // throughput, not what's sitting produced at the node. Counted
       // against the *working* population, not raw headcount: dependents
       // were never going to carry anything either, so they can't count as
-      // part of the reserve.
+      // part of the reserve. How big that reserve is comes from the roads
+      // themselves — see `haulageDemand` — so a sprawling network genuinely
+      // costs a civilisation the hands to service it.
       const workingTotal = ctx.villagers.filter((v) => !v.isDependent).length;
       const totalWorkers = ctx.villagers.filter((v) => v.role === VillagerRole.Worker).length;
-      if (workingTotal - totalWorkers <= logisticsReserveFor(workingTotal)) return;
+      if (workingTotal - totalWorkers <= haulageDemand(ctx)) return;
 
       nearest.villager.role = VillagerRole.Worker;
       // `release()` already guarantees an idle candidate holds neither
@@ -635,10 +762,10 @@ export class WorkforceSystem {
     const allStaffed = [...staffedNodes, ...staffedIndustries];
     const donorPool = allStaffed.filter((s) => settlementBootstrapBonus(s, ctx.traders) === 0);
     const donor = (donorPool.length > 0 ? donorPool : allStaffed).sort(
-      (a, b) => priority(a.resource) - priority(b.resource),
+      (a, b) => priority(a) - priority(b),
     )[0];
     if (!donor) return;
-    if (openingScore(target) - priority(donor.resource) < REASSIGN_MARGIN) return;
+    if (openingScore(target) - priority(donor) < REASSIGN_MARGIN) return;
 
     const worker = donor.workers.find(isAtPost);
     if (!worker) return;
@@ -880,21 +1007,36 @@ export class MigrationSystem {
 
   private relocate(ctx: SimContext): void {
     if (this.cooldown > 0) return;
+    // Charged whether or not anyone actually moves. The cooldown used to be
+    // set only on a successful relocation, which meant that in the ordinary
+    // case — nobody has a good enough reason to move — the whole scan below
+    // ran again on the very next tick, and every tick after that. Since the
+    // scan is a route lookup per idle villager per destination, its cost
+    // grows with the square of how well the civilisation is doing, and at a
+    // hundred residents it was the single most expensive thing in the game.
+    // Nothing here changes fast enough to be worth answering more often than
+    // this anyway.
+    this.cooldown = MIGRATION_COOLDOWN;
+
+    // A place's appeal is a property of the place, not of who is asking, so
+    // it is worth computing once rather than once per candidate per villager.
+    const opportunity = new Map<Trader, number>();
+    for (const trader of ctx.traders) opportunity.set(trader, this.opportunity(trader, ctx));
 
     for (const [villager, idleTime] of this.idleSince) {
       if (idleTime < MIGRATION_GRACE) continue;
 
       const home = villager.home;
-      let bestOpportunity = this.opportunity(home, ctx) + MIGRATION_MARGIN;
+      let bestOpportunity = (opportunity.get(home) ?? 0) + MIGRATION_MARGIN;
       let best: { trader: Trader; route: Route } | null = null;
 
       for (const trader of ctx.traders) {
         if (trader === home) continue;
-        const opportunity = this.opportunity(trader, ctx);
-        if (opportunity < bestOpportunity) continue;
+        const value = opportunity.get(trader) ?? 0;
+        if (value < bestOpportunity) continue;
         const route = ctx.routeBetweenSites(home, trader);
         if (!route) continue;
-        bestOpportunity = opportunity;
+        bestOpportunity = value;
         best = { trader, route };
       }
 
@@ -903,7 +1045,6 @@ export class MigrationSystem {
       villager.task = best.trader;
       villager.setRoute(best.route);
       this.idleSince.delete(villager);
-      this.cooldown = MIGRATION_COOLDOWN;
       return;
     }
   }

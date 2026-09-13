@@ -26,9 +26,16 @@ export enum ResourceType {
  * at once, so the two collapse into `Reachable`.
  */
 export enum NodeState {
-  /** Outside the village's influence; not drawn at all. */
+  /** Out in country the civilisation has no business with yet; not drawn at all. */
   Hidden = 'hidden',
-  /** Inside the influence, visible, waiting for a road. */
+  /**
+   * Offered as a frontier opportunity: drawn, inspectable, priced — but not
+   * part of the realm. No road may anchor on it and nobody may work it until
+   * it has been incorporated (see `World.claim`). This is the whole of the
+   * distinction between *seeing* an opportunity and *owning* it.
+   */
+  Frontier = 'frontier',
+  /** Incorporated into the realm, waiting for a road. */
   Reachable = 'reachable',
   /** The road network reaches it, but nobody works there yet. */
   Connected = 'connected',
@@ -67,4 +74,6 @@ export type WorldEvent =
   | { type: 'nodeLevelUp'; at: Vec2; name: string; level: number }
   | { type: 'roadBuilt'; points: Vec2[] }
   | { type: 'roadLost'; points: Vec2[] }
-  | { type: 'settlementFounded'; at: Vec2; name: string };
+  | { type: 'settlementFounded'; at: Vec2; name: string }
+  /** A frontier site was incorporated — the border just moved out to meet it. */
+  | { type: 'claimed'; at: Vec2; name: string; cost: number };

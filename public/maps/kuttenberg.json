@@ -1,0 +1,1142 @@
+{
+  "format": "via-lucrum-map/1",
+  "name": "Kuttenberg",
+  "source": "Elevation: Terrarium tiles (Mapzen/AWS Open Data, SRTM+Copernicus derivatives). Land cover, water and place names: OpenStreetMap contributors, ODbL. Imported 2026-09-12 from 50.0335,15.1254 span 34x34km, relief 500m.",
+  "cellSize": 32,
+  "metresPerUnit": 4,
+  "seed": 1,
+  "startingPopulation": 5,
+  "village": {
+    "name": "Kutná Hora",
+    "x": 6799.999999999979,
+    "y": 6629.99999999997
+  },
+  "terrain": {
+    "encoding": "raw16",
+    "cols": 266,
+    "rows": 266,
+    "data": "kuttenberg.bin"
+  },
+  "nodes": [
+    {
+      "name": "Quarry 1",
+      "resource": "stone",
+      "x": 6126,
+      "y": 7175,
+      "richness": 0.98
+    },
+    {
+      "name": "Štola sv. Antonína Paduánského",
+      "resource": "iron",
+      "x": 6572,
+      "y": 7139,
+      "richness": 0.7
+    },
+    {
+      "name": "Fields 1",
+      "resource": "food",
+      "x": 1542,
+      "y": 361,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 1",
+      "resource": "wood",
+      "x": 2281,
+      "y": 466,
+      "richness": 1.7
+    },
+    {
+      "name": "Cikánská skála",
+      "resource": "stone",
+      "x": 5480,
+      "y": 5266,
+      "richness": 0.7
+    },
+    {
+      "name": "Propad",
+      "resource": "iron",
+      "x": 6377,
+      "y": 6150,
+      "richness": 0.7
+    },
+    {
+      "name": "Fields 2",
+      "resource": "food",
+      "x": 3311,
+      "y": 630,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 2",
+      "resource": "wood",
+      "x": 1676,
+      "y": 787,
+      "richness": 1.7
+    },
+    {
+      "name": "Quarry 3",
+      "resource": "stone",
+      "x": 4379,
+      "y": 3642,
+      "richness": 1.08
+    },
+    {
+      "name": "Mine 3",
+      "resource": "iron",
+      "x": 7044,
+      "y": 5972,
+      "richness": 0.83
+    },
+    {
+      "name": "Fields 3",
+      "resource": "food",
+      "x": 723,
+      "y": 6211,
+      "richness": 1.59
+    },
+    {
+      "name": "Woodland 3",
+      "resource": "wood",
+      "x": 3447,
+      "y": 355,
+      "richness": 1.7
+    },
+    {
+      "name": "Quarry 4",
+      "resource": "stone",
+      "x": 2246,
+      "y": 3717,
+      "richness": 1.61
+    },
+    {
+      "name": "Bylanka",
+      "resource": "iron",
+      "x": 6509,
+      "y": 6766,
+      "richness": 0.7
+    },
+    {
+      "name": "Fields 4",
+      "resource": "food",
+      "x": 7269,
+      "y": 3932,
+      "richness": 1.56
+    },
+    {
+      "name": "Woodland 4",
+      "resource": "wood",
+      "x": 629,
+      "y": 270,
+      "richness": 1.7
+    },
+    {
+      "name": "lom Libodřice",
+      "resource": "stone",
+      "x": 3406,
+      "y": 5189,
+      "richness": 1.68
+    },
+    {
+      "name": "Fields 5",
+      "resource": "food",
+      "x": 5298,
+      "y": 8250,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 5",
+      "resource": "wood",
+      "x": 3483,
+      "y": 1853,
+      "richness": 1.54
+    },
+    {
+      "name": "Quarry 6",
+      "resource": "stone",
+      "x": 1059,
+      "y": 2916,
+      "richness": 1.37
+    },
+    {
+      "name": "Fields 6",
+      "resource": "food",
+      "x": 2956,
+      "y": 3459,
+      "richness": 1.7
+    },
+    {
+      "name": "Bažantnice",
+      "resource": "wood",
+      "x": 4574,
+      "y": 271,
+      "richness": 1.66
+    },
+    {
+      "name": "Quarry 7",
+      "resource": "stone",
+      "x": 1745,
+      "y": 3561,
+      "richness": 0.94
+    },
+    {
+      "name": "Fields 7",
+      "resource": "food",
+      "x": 8126,
+      "y": 4545,
+      "richness": 1.38
+    },
+    {
+      "name": "Woodland 7",
+      "resource": "wood",
+      "x": 4735,
+      "y": 1422,
+      "richness": 1.7
+    },
+    {
+      "name": "Quarry 8",
+      "resource": "stone",
+      "x": 1706,
+      "y": 5100,
+      "richness": 0.94
+    },
+    {
+      "name": "Fields 8",
+      "resource": "food",
+      "x": 8029,
+      "y": 3665,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 8",
+      "resource": "wood",
+      "x": 5854,
+      "y": 1796,
+      "richness": 1.7
+    },
+    {
+      "name": "Quarry 9",
+      "resource": "stone",
+      "x": 6751,
+      "y": 6920,
+      "richness": 0.92
+    },
+    {
+      "name": "Fields 9",
+      "resource": "food",
+      "x": 5786,
+      "y": 1246,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 9",
+      "resource": "wood",
+      "x": 6198,
+      "y": 8442,
+      "richness": 1.48
+    },
+    {
+      "name": "Quarry 10",
+      "resource": "stone",
+      "x": 8065,
+      "y": 5845,
+      "richness": 0.94
+    },
+    {
+      "name": "Fields 10",
+      "resource": "food",
+      "x": 5111,
+      "y": 4893,
+      "richness": 1.62
+    },
+    {
+      "name": "Woodland 10",
+      "resource": "wood",
+      "x": 5790,
+      "y": 8047,
+      "richness": 1.7
+    },
+    {
+      "name": "pískovna",
+      "resource": "stone",
+      "x": 872,
+      "y": 2275,
+      "richness": 1.33
+    },
+    {
+      "name": "Fields 11",
+      "resource": "food",
+      "x": 5406,
+      "y": 3371,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 11",
+      "resource": "wood",
+      "x": 2474,
+      "y": 8220,
+      "richness": 1.05
+    },
+    {
+      "name": "Quarry 12",
+      "resource": "stone",
+      "x": 5770,
+      "y": 7124,
+      "richness": 0.94
+    },
+    {
+      "name": "Fields 12",
+      "resource": "food",
+      "x": 1530,
+      "y": 4643,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 12",
+      "resource": "wood",
+      "x": 3708,
+      "y": 5227,
+      "richness": 1.23
+    },
+    {
+      "name": "Quarry 13",
+      "resource": "stone",
+      "x": 2285,
+      "y": 6081,
+      "richness": 0.77
+    },
+    {
+      "name": "Fields 13",
+      "resource": "food",
+      "x": 6815,
+      "y": 4997,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 13",
+      "resource": "wood",
+      "x": 5952,
+      "y": 5280,
+      "richness": 1.4
+    },
+    {
+      "name": "Quarry 14",
+      "resource": "stone",
+      "x": 1959,
+      "y": 4781,
+      "richness": 1.2
+    },
+    {
+      "name": "Fields 14",
+      "resource": "food",
+      "x": 6530,
+      "y": 3150,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 14",
+      "resource": "wood",
+      "x": 7978,
+      "y": 5681,
+      "richness": 1.7
+    },
+    {
+      "name": "Quarry 15",
+      "resource": "stone",
+      "x": 2465,
+      "y": 4037,
+      "richness": 0.79
+    },
+    {
+      "name": "Fields 15",
+      "resource": "food",
+      "x": 6498,
+      "y": 5738,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 15",
+      "resource": "wood",
+      "x": 6740,
+      "y": 6021,
+      "richness": 1.44
+    },
+    {
+      "name": "Quarry 16",
+      "resource": "stone",
+      "x": 6433,
+      "y": 3296,
+      "richness": 0.92
+    },
+    {
+      "name": "Fields 16",
+      "resource": "food",
+      "x": 967,
+      "y": 8061,
+      "richness": 1.6
+    },
+    {
+      "name": "Woodland 16",
+      "resource": "wood",
+      "x": 2891,
+      "y": 5304,
+      "richness": 1.44
+    },
+    {
+      "name": "Quarry 17",
+      "resource": "stone",
+      "x": 5321,
+      "y": 4271,
+      "richness": 0.86
+    },
+    {
+      "name": "Fields 17",
+      "resource": "food",
+      "x": 1852,
+      "y": 5676,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 17",
+      "resource": "wood",
+      "x": 4845,
+      "y": 5911,
+      "richness": 1.7
+    },
+    {
+      "name": "Quarry 18",
+      "resource": "stone",
+      "x": 4279,
+      "y": 5250,
+      "richness": 0.72
+    },
+    {
+      "name": "Fields 18",
+      "resource": "food",
+      "x": 862,
+      "y": 7193,
+      "richness": 1.68
+    },
+    {
+      "name": "Woodland 18",
+      "resource": "wood",
+      "x": 6989,
+      "y": 5704,
+      "richness": 1.48
+    },
+    {
+      "name": "Quarry 19",
+      "resource": "stone",
+      "x": 8463,
+      "y": 4344,
+      "richness": 0.77
+    },
+    {
+      "name": "Fields 19",
+      "resource": "food",
+      "x": 8264,
+      "y": 603,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 19",
+      "resource": "wood",
+      "x": 5444,
+      "y": 6265,
+      "richness": 1.7
+    },
+    {
+      "name": "Quarry 20",
+      "resource": "stone",
+      "x": 2092,
+      "y": 7322,
+      "richness": 0.78
+    },
+    {
+      "name": "Fields 20",
+      "resource": "food",
+      "x": 7088,
+      "y": 913,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 20",
+      "resource": "wood",
+      "x": 3098,
+      "y": 6700,
+      "richness": 1.41
+    },
+    {
+      "name": "Barchovický lom",
+      "resource": "stone",
+      "x": 1575,
+      "y": 6804,
+      "richness": 1.12
+    },
+    {
+      "name": "Fields 21",
+      "resource": "food",
+      "x": 6557,
+      "y": 1152,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 21",
+      "resource": "wood",
+      "x": 2872,
+      "y": 6072,
+      "richness": 1.7
+    },
+    {
+      "name": "Quarry 22",
+      "resource": "stone",
+      "x": 6339,
+      "y": 7209,
+      "richness": 0.87
+    },
+    {
+      "name": "Fields 22",
+      "resource": "food",
+      "x": 6272,
+      "y": 659,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 22",
+      "resource": "wood",
+      "x": 1126,
+      "y": 5781,
+      "richness": 1.7
+    },
+    {
+      "name": "Quarry 23",
+      "resource": "stone",
+      "x": 4277,
+      "y": 3949,
+      "richness": 1.05
+    },
+    {
+      "name": "Fields 23",
+      "resource": "food",
+      "x": 7768,
+      "y": 1887,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 23",
+      "resource": "wood",
+      "x": 8295,
+      "y": 5853,
+      "richness": 1.56
+    },
+    {
+      "name": "Quarry 24",
+      "resource": "stone",
+      "x": 2036,
+      "y": 3196,
+      "richness": 0.84
+    },
+    {
+      "name": "Fields 24",
+      "resource": "food",
+      "x": 8473,
+      "y": 1969,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 24",
+      "resource": "wood",
+      "x": 3420,
+      "y": 4626,
+      "richness": 1.61
+    },
+    {
+      "name": "Quarry 25",
+      "resource": "stone",
+      "x": 1919,
+      "y": 3334,
+      "richness": 0.84
+    },
+    {
+      "name": "Fields 25",
+      "resource": "food",
+      "x": 7060,
+      "y": 2232,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 25",
+      "resource": "wood",
+      "x": 5692,
+      "y": 4026,
+      "richness": 1.65
+    },
+    {
+      "name": "Quarry 26",
+      "resource": "stone",
+      "x": 5943,
+      "y": 7161,
+      "richness": 0.78
+    },
+    {
+      "name": "Fields 26",
+      "resource": "food",
+      "x": 7312,
+      "y": 4187,
+      "richness": 1.67
+    },
+    {
+      "name": "Woodland 26",
+      "resource": "wood",
+      "x": 2590,
+      "y": 1366,
+      "richness": 1.7
+    },
+    {
+      "name": "Quarry 27",
+      "resource": "stone",
+      "x": 2553,
+      "y": 4631,
+      "richness": 0.78
+    },
+    {
+      "name": "Fields 27",
+      "resource": "food",
+      "x": 8251,
+      "y": 2820,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 27",
+      "resource": "wood",
+      "x": 1162,
+      "y": 1683,
+      "richness": 1.62
+    },
+    {
+      "name": "Quarry 28",
+      "resource": "stone",
+      "x": 6989,
+      "y": 3645,
+      "richness": 0.87
+    },
+    {
+      "name": "Fields 28",
+      "resource": "food",
+      "x": 5416,
+      "y": 172,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 28",
+      "resource": "wood",
+      "x": 2731,
+      "y": 2273,
+      "richness": 1.18
+    },
+    {
+      "name": "Quarry 29",
+      "resource": "stone",
+      "x": 2041,
+      "y": 3532,
+      "richness": 0.82
+    },
+    {
+      "name": "Fields 29",
+      "resource": "food",
+      "x": 5991,
+      "y": 2178,
+      "richness": 1.52
+    },
+    {
+      "name": "Bor",
+      "resource": "wood",
+      "x": 4261,
+      "y": 2294,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 30",
+      "resource": "food",
+      "x": 6909,
+      "y": 2459,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 30",
+      "resource": "wood",
+      "x": 7279,
+      "y": 1671,
+      "richness": 1.69
+    },
+    {
+      "name": "Fields 31",
+      "resource": "food",
+      "x": 4714,
+      "y": 1018,
+      "richness": 1.7
+    },
+    {
+      "name": "Kerský les",
+      "resource": "wood",
+      "x": 699,
+      "y": 1088,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 32",
+      "resource": "food",
+      "x": 4600,
+      "y": 701,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 32",
+      "resource": "wood",
+      "x": 6953,
+      "y": 2716,
+      "richness": 1.55
+    },
+    {
+      "name": "Fields 33",
+      "resource": "food",
+      "x": 4548,
+      "y": 2710,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 33",
+      "resource": "wood",
+      "x": 60,
+      "y": 2060,
+      "richness": 1.54
+    },
+    {
+      "name": "Fields 34",
+      "resource": "food",
+      "x": 7288,
+      "y": 5916,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 34",
+      "resource": "wood",
+      "x": 1556,
+      "y": 2197,
+      "richness": 1.68
+    },
+    {
+      "name": "Fields 35",
+      "resource": "food",
+      "x": 8207,
+      "y": 5014,
+      "richness": 1.41
+    },
+    {
+      "name": "Woodland 35",
+      "resource": "wood",
+      "x": 5836,
+      "y": 2569,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 36",
+      "resource": "food",
+      "x": 7640,
+      "y": 6518,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 36",
+      "resource": "wood",
+      "x": 6139,
+      "y": 1804,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 37",
+      "resource": "food",
+      "x": 7005,
+      "y": 7322,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 37",
+      "resource": "wood",
+      "x": 8451,
+      "y": 7426,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 38",
+      "resource": "food",
+      "x": 8330,
+      "y": 6440,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 38",
+      "resource": "wood",
+      "x": 7354,
+      "y": 7065,
+      "richness": 1.63
+    },
+    {
+      "name": "Fields 39",
+      "resource": "food",
+      "x": 8220,
+      "y": 7310,
+      "richness": 1.68
+    },
+    {
+      "name": "Woodland 39",
+      "resource": "wood",
+      "x": 715,
+      "y": 7603,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 40",
+      "resource": "food",
+      "x": 7903,
+      "y": 8138,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 40",
+      "resource": "wood",
+      "x": 8066,
+      "y": 8330,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 41",
+      "resource": "food",
+      "x": 8285,
+      "y": 8398,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 41",
+      "resource": "wood",
+      "x": 3316,
+      "y": 7270,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 42",
+      "resource": "food",
+      "x": 5228,
+      "y": 5505,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 42",
+      "resource": "wood",
+      "x": 5354,
+      "y": 7713,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 43",
+      "resource": "food",
+      "x": 4487,
+      "y": 4852,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 43",
+      "resource": "wood",
+      "x": 6044,
+      "y": 7369,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 44",
+      "resource": "food",
+      "x": 4460,
+      "y": 5721,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 44",
+      "resource": "wood",
+      "x": 2774,
+      "y": 7982,
+      "richness": 1.12
+    },
+    {
+      "name": "Fields 45",
+      "resource": "food",
+      "x": 5254,
+      "y": 6997,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 45",
+      "resource": "wood",
+      "x": 1475,
+      "y": 7820,
+      "richness": 1.55
+    },
+    {
+      "name": "Fields 46",
+      "resource": "food",
+      "x": 6124,
+      "y": 6742,
+      "richness": 1.68
+    },
+    {
+      "name": "Woodland 46",
+      "resource": "wood",
+      "x": 7806,
+      "y": 6153,
+      "richness": 1.64
+    },
+    {
+      "name": "Fields 47",
+      "resource": "food",
+      "x": 4984,
+      "y": 7380,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 47",
+      "resource": "wood",
+      "x": 8014,
+      "y": 3860,
+      "richness": 1.03
+    },
+    {
+      "name": "Fields 48",
+      "resource": "food",
+      "x": 4182,
+      "y": 6834,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 48",
+      "resource": "wood",
+      "x": 6583,
+      "y": 3968,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 49",
+      "resource": "food",
+      "x": 5398,
+      "y": 7953,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 49",
+      "resource": "wood",
+      "x": 2734,
+      "y": 4931,
+      "richness": 1.62
+    },
+    {
+      "name": "Fields 50",
+      "resource": "food",
+      "x": 6988,
+      "y": 7834,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 50",
+      "resource": "wood",
+      "x": 1438,
+      "y": 3184,
+      "richness": 1.32
+    },
+    {
+      "name": "Fields 51",
+      "resource": "food",
+      "x": 6513,
+      "y": 8188,
+      "richness": 1.6
+    },
+    {
+      "name": "Woodland 51",
+      "resource": "wood",
+      "x": 5367,
+      "y": 3942,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 52",
+      "resource": "food",
+      "x": 3350,
+      "y": 8051,
+      "richness": 1.65
+    },
+    {
+      "name": "Woodland 52",
+      "resource": "wood",
+      "x": 7065,
+      "y": 4719,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 53",
+      "resource": "food",
+      "x": 3669,
+      "y": 7009,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 53",
+      "resource": "wood",
+      "x": 3929,
+      "y": 3083,
+      "richness": 1.37
+    },
+    {
+      "name": "Fields 54",
+      "resource": "food",
+      "x": 4361,
+      "y": 8271,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 54",
+      "resource": "wood",
+      "x": 4808,
+      "y": 3332,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 55",
+      "resource": "food",
+      "x": 3527,
+      "y": 2675,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 55",
+      "resource": "wood",
+      "x": 4406,
+      "y": 4384,
+      "richness": 1.25
+    },
+    {
+      "name": "Fields 56",
+      "resource": "food",
+      "x": 3193,
+      "y": 1259,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 56",
+      "resource": "wood",
+      "x": 8291,
+      "y": 4858,
+      "richness": 1.59
+    },
+    {
+      "name": "Fields 57",
+      "resource": "food",
+      "x": 4016,
+      "y": 3974,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 57",
+      "resource": "wood",
+      "x": 1000,
+      "y": 4680,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 58",
+      "resource": "food",
+      "x": 3804,
+      "y": 3783,
+      "richness": 1.64
+    },
+    {
+      "name": "Woodland 58",
+      "resource": "wood",
+      "x": 6281,
+      "y": 4512,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 59",
+      "resource": "food",
+      "x": 2021,
+      "y": 171,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 59",
+      "resource": "wood",
+      "x": 4336,
+      "y": 6610,
+      "richness": 1.58
+    },
+    {
+      "name": "Fields 60",
+      "resource": "food",
+      "x": 1861,
+      "y": 1599,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 60",
+      "resource": "wood",
+      "x": 7972,
+      "y": 2500,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 61",
+      "resource": "food",
+      "x": 108,
+      "y": 2606,
+      "richness": 1.7
+    },
+    {
+      "name": "Woodland 61",
+      "resource": "wood",
+      "x": 6147,
+      "y": 991,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 62",
+      "resource": "food",
+      "x": 217,
+      "y": 494,
+      "richness": 1.67
+    },
+    {
+      "name": "Woodland 62",
+      "resource": "wood",
+      "x": 1798,
+      "y": 6588,
+      "richness": 1.7
+    },
+    {
+      "name": "Fields 63",
+      "resource": "food",
+      "x": 151,
+      "y": 1686,
+      "richness": 1.67
+    },
+    {
+      "name": "Woodland 63",
+      "resource": "wood",
+      "x": 7870,
+      "y": 8507,
+      "richness": 1.34
+    },
+    {
+      "name": "Fields 64",
+      "resource": "food",
+      "x": 1378,
+      "y": 2386,
+      "richness": 1.7
+    }
+  ]
+}

@@ -24,6 +24,7 @@ import { INDUSTRY_LABELS, RESOURCE_LABELS, SITE_LABELS, WORKER_LABELS, roadTierN
 
 const NODE_STATE_LABELS: Record<NodeState, string> = {
   [NodeState.Hidden]: 'UNKNOWN',
+  [NodeState.Frontier]: 'BEYOND THE BORDER',
   [NodeState.Reachable]: 'NOT CONNECTED',
   [NodeState.Connected]: 'CONNECTED',
   [NodeState.Operational]: 'OPERATIONAL',
@@ -44,10 +45,24 @@ export class Hud {
   private readonly day = document.getElementById('hud-day')!;
   private readonly inspect = document.getElementById('inspect')!;
   private readonly hint = document.getElementById('hint')!;
+  private readonly capacity = document.getElementById('capacity')!;
 
   private hintFaded = false;
+  /** What the inspect panel currently shows, so it is only rebuilt when it changes. */
+  private lastInspectHtml = '';
 
-  constructor(private readonly world: World) {}
+  constructor(private readonly world: World) {
+    // The claim button lives inside the inspect panel's innerHTML, which is
+    // replaced wholesale whenever the panel changes — so the click is caught
+    // by delegation on the container, which is not.
+    this.inspect.addEventListener('click', (event) => {
+      const target = (event.target as HTMLElement).closest('[data-claim]');
+      if (!target) return;
+      const id = Number(target.getAttribute('data-claim'));
+      const node = this.world.nodes.find((n) => n.id === id);
+      if (node) this.world.claim(node);
+    });
+  }
 
   update(focused: Site | null, roadPoint: Vec2 | null): void {
     this.day.textContent = `DAY ${this.world.day}`;
@@ -57,7 +72,45 @@ export class Hud {
       this.hint.classList.add('faded');
     }
 
+    this.renderCapacity();
     this.renderInspect(focused, roadPoint);
+  }
+
+  /**
+   * Expansion Capacity, and where it is coming from.
+   *
+   * Shown as a standing readout rather than only on the frontier panel,
+   * because it is the number the player is waiting on: the whole loop is
+   * "watch the civilisation earn its next expansion, then decide where to
+   * spend it", and that only works if the earning is visible while it
+   * happens. The breakdown is there so a player can see *which* part of the
+   * civilisation is buying their next province.
+   */
+  private renderCapacity(): void {
+    const rate = this.world.capacityRate;
+    const cheapest = this.world.frontier.reduce<number | null>(
+      (best, c) => (best === null || c.cost < best ? c.cost : best),
+      null,
+    );
+
+    const held = Math.floor(this.world.expansionCapacity);
+    const toward = cheapest === null ? '' : ` / ${cheapest}`;
+    const progress = cheapest === null ? 0 : Math.min(1, this.world.expansionCapacity / cheapest);
+
+    this.capacity.innerHTML = `
+      <div class="cap-label">EXPANSION CAPACITY</div>
+      <div class="cap-value">${held}<span class="cap-target">${toward}</span></div>
+      <div class="cap-track"><div class="cap-fill" style="width:${(progress * 100).toFixed(1)}%"></div></div>
+      <div class="cap-rate">+${rate.total.toFixed(1)} / min</div>
+      <div class="cap-breakdown">
+        ${this.capRow('People', rate.population)}
+        ${this.capRow('Prosperity', rate.prosperity)}
+        ${this.capRow('Activity', rate.activity)}
+      </div>`;
+  }
+
+  private capRow(label: string, value: number): string {
+    return `<div class="cap-row"><span>${label}</span><span>+${value.toFixed(1)}</span></div>`;
   }
 
   private renderInspect(site: Site | null, roadPoint: Vec2 | null): void {
@@ -65,15 +118,22 @@ export class Hud {
 
     if (site instanceof Village) html = this.villagePanel(site);
     else if (site instanceof Settlement) html = this.settlementPanel(site);
+    else if (site && (site as ResourceNode).state === NodeState.Frontier) html = this.frontierPanel(site as ResourceNode);
     else if (site) html = this.nodePanel(site as ResourceNode);
     else if (roadPoint) html = this.roadPanel(roadPoint);
 
     if (!html) {
       this.inspect.classList.add('hidden');
+      this.lastInspectHtml = '';
       return;
     }
 
     this.inspect.classList.remove('hidden');
+    // Only rewrite when something actually changed. Replacing `innerHTML`
+    // every frame would rebuild the claim button under the cursor sixty times
+    // a second, which loses hover state and can swallow the click.
+    if (html === this.lastInspectHtml) return;
+    this.lastInspectHtml = html;
     this.inspect.innerHTML = html;
   }
 
@@ -126,7 +186,7 @@ export class Hud {
         ${jobs}
         ${this.row('Available', String(this.world.idleCountAt(village)))}
         ${this.row('Transporters', String(this.world.transporterCountAt(village)))}
-        ${this.row('Influence', String(village.influenceRadius))}
+        ${this.row('Holds', `${village.footprintRadius} <span class="note-inline">of the realm's ground</span>`)}
       </div>
       <div class="divider"></div>
       ${this.developmentPanel(village)}
@@ -199,6 +259,45 @@ export class Hud {
 
     if (rows.length === 0) return '';
     return `<div class="divider"></div><div class="note">IN TRANSIT</div><div class="stats">${rows.join('')}</div>`;
+  }
+
+  /**
+   * A frontier offer: what is out there, and what taking it in would cost.
+   *
+   * Deliberately *not* the operational node panel. A site beyond the border
+   * has no route, no workers, no production and no stock, and showing eight
+   * rows of zeroes would suggest the player is looking at something broken
+   * rather than something they have not bought yet. What matters here is
+   * what it would be worth and what it would cost.
+   */
+  private frontierPanel(node: ResourceNode): string {
+    const cost = this.world.claimCost(node);
+    if (cost === null) return this.nodePanel(node);
+
+    const affordable = this.world.expansionCapacity >= cost;
+    const short = Math.ceil(cost - this.world.expansionCapacity);
+    const rate = this.world.capacityRate.total;
+    const wait = !affordable && rate > 0 ? ` <span class="note-inline">~${Math.ceil((short / rate) * 60)}s away</span>` : '';
+
+    return `
+      <div class="name">${node.name.toUpperCase()}</div>
+      <div class="meta">${SITE_LABELS[node.type]} &middot; BEYOND THE BORDER</div>
+      <div class="stats">
+        ${this.row('Would produce', RESOURCE_LABELS[node.resource])}
+        ${this.row('Ground', TERRAIN_LABELS[this.world.terrain.typeAt(node.position)])}
+        ${this.row('Beyond the border', `${Math.round(this.world.territory.distanceOutside(node.position))}`)}
+      </div>
+      <div class="divider"></div>
+      <div class="claim">
+        <div class="claim-cost ${affordable ? '' : 'short'}">
+          <span class="claim-label">EXPANSION COST</span>
+          <span class="claim-value">${cost}</span>
+        </div>
+        <button type="button" class="claim-button" data-claim="${node.id}" ${affordable ? '' : 'disabled'}>
+          ${affordable ? 'Claim' : `Need ${short} more${wait}`}
+        </button>
+        <div class="note">Incorporating this gives the realm the ground, not the goods — it still needs a road, and people willing to work it.</div>
+      </div>`;
   }
 
   private nodePanel(node: ResourceNode): string {
@@ -349,7 +448,7 @@ export class Hud {
         ${this.row('Specialization', settlement.trade.label)}
         ${this.row('Origin', origin)}
         ${this.row('Age', age === 1 ? '1 day' : `${age} days`)}
-        ${settlement.influenceRadius > 0 ? this.row('Influence', String(settlement.influenceRadius)) : ''}
+        ${this.row('Holds', `${settlement.footprintRadius} <span class="note-inline">of the realm's ground</span>`)}
       </div>
       <div class="divider"></div>
       ${this.developmentPanel(settlement)}

@@ -1,13 +1,13 @@
 import {
   BASE_VALUE,
-  consumeProcessedGoods,
+  consume,
   decayExcessStorage,
   decayThroughput,
   decayWealthIncome,
   DEMAND_PER_CAPITA_PER_MIN,
   easePopulation,
   recordWealth,
-  sustainablePopulation,
+  sustainablePopulationAcross,
   type Trader,
 } from './economy';
 import { advanceDevelopment } from './development';
@@ -16,9 +16,22 @@ import { advanceHousing, housingCapacity } from './housing';
 import type { Industry } from './industry';
 import { ResourceNode } from './resourceNode';
 import { RoadNetwork, type Anchor, type RoadEdge, type Route, type Site } from './roadNetwork';
-import { TERRAIN_CHUNK_SIZE, TerrainField } from './terrain';
+import { HOURS_PER_DAY } from './scale';
+import type { NodeSource, TerrainSource } from './source';
+import { NO_RIVERS, type RiverNetwork } from './river';
+import { TERRAIN_CHUNK_SIZE } from './terrain';
 import { dominantGood, TrafficField, WEAR_ON_BUILD, WEAR_PER_TRIP, wearEffort } from './traffic';
 import { WorldGenerator } from './worldgen';
+import { CLAIM_RADIUS, Territory } from './territory';
+import { CLAIM_HORIZON, isSurveyed, ROAD_HORIZON, sampleAlong, TIER_HORIZON, type SurveySource } from './survey';
+import {
+  capacityRatePerMin,
+  FRONTIER_REACH,
+  FRONTIER_SEARCH_LIMIT,
+  selectFrontier,
+  type CapacityBreakdown,
+  type FrontierCandidate,
+} from './expansion';
 import { Settlement, stageFor, tradeFor, type Trade } from './settlement';
 import { SettlementSystem, type Candidate, type Origin, type SettlementContext } from './settlementSystem';
 import { IndustrySystem, MigrationSystem, nearestTrader, TransportSystem, WorkforceSystem, type SimContext } from './systems';
@@ -32,48 +45,36 @@ import { WorkerDeliverySystem } from './workerDelivery';
 const ROAD_BUILD_TIME = 0.45;
 /** In-game hours per real second. */
 const HOURS_PER_SECOND = 1;
-const HOURS_PER_DAY = 24;
 /** Seconds between the village's population actually gaining or losing someone. */
 const POPULATION_STEP_INTERVAL = 9;
 /** Mean wear below which an unused road has faded back into the landscape. */
 const ABANDON_BELOW = 0.12;
+/**
+ * How much less patient the wilderness is than the realm. A road across
+ * country nobody holds has to be several times busier to justify itself —
+ * see `World.abandonThreshold`.
+ */
+const OUTSIDE_ABANDON_FACTOR = 3.5;
 /** How often cached routes get re-priced against current wear, not just a structural change. */
 const WEAR_REFRESH_INTERVAL = 4;
 /** Seconds between sweeps for roads nobody is keeping up. */
 const PRUNE_INTERVAL = 2;
-/** How far a guaranteed early food/wood source is allowed to be forced into place — see `WorldGenerator.ensureStartingResources`. */
-const STARTING_RESOURCE_REACH = 850;
+/** How far a guaranteed early food/wood source is allowed to be forced into place — see `NodeSource.ensureStartingResources`. */
+export const STARTING_RESOURCE_REACH = 850;
 /**
- * How far past the *influence border* the world is generated — the only
- * thing that drives generation. Not the camera: panning around a map is
- * looking, not expanding, and a world that materialised wherever someone
- * happened to scroll would generate ground the civilisation has no claim
- * on and may never reach. What expands the world is the civilisation
- * expanding: the village's own reach growing with its tier, a settlement
- * taking hold further out and opening its own ring, a node levelling up
- * and pushing its own frontier. Generation stays this far ahead of all of
- * them, so ground (and the deposits in it) is always decided well before
- * an influence ring arrives to reveal it.
+ * How far past everything the realm holds — and past the frontier it is
+ * currently being offered — the world is generated.
+ *
+ * Not the camera: panning around a map is looking, not expanding, and a world
+ * that materialised wherever someone happened to scroll would generate ground
+ * the civilisation has no claim on and may never reach. What decides the
+ * world's extent is what the civilisation has actually taken in, plus enough
+ * beyond it to hold up the next set of opportunities — an offer must never be
+ * made over ground that has not been decided yet.
  */
 const GENERATION_MARGIN = 1200;
 /** How often the generation frontier is re-checked. Chunk decisions are cached, so a miss here just means a short delay, not wasted work. */
 const GENERATION_CHECK_INTERVAL = 3;
-/**
- * How far a node the road network reaches opens the country around itself,
- * before its own level adds anything — see `influenceCentres`. This is what
- * keeps the frontier from ever closing: the player's one verb is drawing
- * roads, so drawing one has to be able to reveal something.
- *
- * Sized against the gap between deposits rather than picked for feel.
- * Deposits sit about `CLUSTER_CELL_SIZE` (1300) apart and their sites
- * scatter a few hundred units either side of centre, so the typical gap
- * between the nearest sites of neighbouring deposits is more like 700-800.
- * At 620 a frontier node usually *couldn't* see the next deposit along, so
- * chains dead-ended and expansion stalled at a hard ceiling even with roads
- * still being built. This clears that gap most of the time without simply
- * handing over the map.
- */
-const CONNECTED_NODE_REACH = 780;
 /**
  * Seconds (this world's "hours" are 1:1 with real seconds — see
  * `HOURS_PER_SECOND`) the founding population is propped up regardless of
@@ -88,8 +89,33 @@ export interface WorldConfig {
   height: number;
   village: { name: string; x: number; y: number };
   startingPopulation: number;
-  /** Everything about the generated world — terrain and resource placement alike — is a pure function of this. */
+  /**
+   * Everything a *procedurally generated* world is a pure function of. Still
+   * required even when `source` is supplied: plenty of systems that have
+   * nothing to do with generation (frontier tie-breaking in `expansion.ts`,
+   * settlement naming) take a seed for reproducibility, and they need one
+   * whether the ground came from noise or from a survey.
+   */
   seed: number;
+  /**
+   * Where the world comes from. Omitted, `World` builds the procedural
+   * generator from `seed` — which is exactly what it always did, and what
+   * every harness in `tools/` still does.
+   *
+   * Supplied, `World` asks no questions about what it was handed. This is an
+   * already-constructed object rather than a `{ kind: 'pack', id }` tag on
+   * purpose: an imported map has to be *loaded* before it can answer
+   * anything, loading is asynchronous, and the simulation has no business
+   * owning an async step. Whoever builds the world does the loading, then
+   * hands over something that can already answer.
+   */
+  source?: NodeSource;
+  /**
+   * Draw the whole map from the start instead of uncovering it as the realm
+   * reaches out. Only meaningful for a world with edges — see
+   * `World.uncoverWholeMap`.
+   */
+  revealAll?: boolean;
 }
 
 /**
@@ -103,7 +129,8 @@ export class World {
   readonly village: Village;
   readonly nodes: ResourceNode[] = [];
   readonly network = new RoadNetwork();
-  readonly terrain: TerrainField;
+  readonly terrain: TerrainSource;
+  readonly rivers: RiverNetwork;
   readonly traffic: TrafficField;
   /** The world seed everything generated is a deterministic function of — see `worldgen.ts`. */
   readonly seed: number;
@@ -120,13 +147,27 @@ export class World {
   /** Where total population is easing toward — see `updatePopulation`. */
   populationTarget = 0;
 
+  /**
+   * The ground the civilisation actually holds — see `territory.ts`. Grows
+   * only when something is deliberately incorporated, never on its own.
+   */
+  readonly territory = new Territory();
+  /**
+   * Unspent Expansion Capacity. Earned by the civilisation doing well (see
+   * `expansion.ts`), spent by the player on frontier claims, and the one
+   * number standing between "we could go there" and "we went there".
+   */
+  expansionCapacity = 0;
+  /** What the frontier is offering right now. Refreshed whenever the border moves. */
+  frontier: FrontierCandidate[] = [];
+
   private readonly transport = new TransportSystem();
   private readonly workforce = new WorkforceSystem();
   private readonly workerDelivery = new WorkerDeliverySystem();
   private readonly migration = new MigrationSystem();
   private readonly industry = new IndustrySystem();
   private readonly emergence = new SettlementSystem();
-  private readonly generator: WorldGenerator;
+  private readonly source: NodeSource;
 
   private events: WorldEvent[] = [];
   private routeCache = new Map<ResourceNode, Route | null>();
@@ -164,19 +205,36 @@ export class World {
     this.width = config.width;
     this.height = config.height;
     this.seed = config.seed;
-    this.generator = new WorldGenerator(config.seed);
-    this.terrain = this.generator.terrain;
+    this.source = config.source ?? new WorldGenerator(config.seed);
+    this.terrain = this.source.terrain;
+    this.rivers = this.source.rivers ?? NO_RIVERS;
     this.traffic = new TrafficField(config.width, config.height);
     this.network.setWearLookup((points) => this.traffic.wearAlong(points));
 
-    this.village = new Village(config.village.name, config.village.x, config.village.y);
+    // Where the village is *asked* to stand is a coordinate; where it can
+    // stand is a question about the ground, and only the world source can
+    // answer it. See `NodeSource.habitableSite` — roughly one seed in
+    // ten used to put the founding village in open water, where no road
+    // could ever leave it and the game was over before the first input.
+    const site = this.source.habitableSite({ x: config.village.x, y: config.village.y }, STARTING_RESOURCE_REACH);
+    this.village = new Village(config.village.name, site.x, site.y);
+
+    // The founding seat: the first and only piece of territory nobody had to
+    // pay for. Everything the realm ever holds after this is bought.
+    this.territory.incorporate({
+      key: 'village',
+      kind: 'seat',
+      position: this.village.position,
+      radius: this.village.footprintRadius,
+      link: null,
+    });
 
     // Generate the ground under and around the village before anything else
-    // touches it — `revealNodes` below, and every later query against
-    // `this.terrain`, needs real ground to answer against, not empty space
-    // waiting to be decided later. Same rule as every later expansion: the
-    // village's own influence, plus the standing margin.
-    this.generateAround(this.village.position, this.village.influenceRadius + GENERATION_MARGIN);
+    // touches it — the frontier search below, and every later query against
+    // `this.terrain`, needs real ground to answer against rather than empty
+    // space waiting to be decided. Same rule as every later expansion: what
+    // the realm holds, plus the frontier it can see past it, plus the margin.
+    this.generateAround(this.village.position, this.village.footprintRadius + FRONTIER_REACH + GENERATION_MARGIN);
     this.ensureStartingResources();
     this.stockFoundingReserves(config.startingPopulation);
     this.foundingPopulation = config.startingPopulation;
@@ -188,7 +246,104 @@ export class World {
     this.syncPopulation();
     this.villageTier = this.village.tier;
 
-    this.revealNodes();
+    this.incorporateFoundingSites();
+    this.absorbEnclosedNodes();
+    this.refreshFrontier();
+
+    // Last, so it wins over whatever the founding passes happened to uncover.
+    if (config.revealAll) this.uncoverWholeMap();
+  }
+
+  /**
+   * The village starts with the fields and woodlot it has always worked.
+   *
+   * Without this the realm begins as a single seat holding nothing but its own
+   * skirts, and the player's opening move is to wait: capacity accrues from
+   * population and trade, both of which need a resource site, which costs
+   * capacity. At the founding rate that is ten minutes of watching a village
+   * starve before the first decision is even available — and it did, straight
+   * to a population of three.
+   *
+   * These are the sites `NodeSource.ensureStartingResources` already
+   * guarantees, and this is the same exception in the same spirit: a place
+   * that existed before the player arrived would obviously already be working
+   * the ground next to it. Everything past these two is earned.
+   */
+  private incorporateFoundingSites(): void {
+    for (const resource of [ResourceType.Food, ResourceType.Wood]) {
+      const nearest = this.nodes
+        .filter((n) => !n.isClaimed && n.resource === resource)
+        .filter((n) => dist(n.position, this.village.position) <= STARTING_RESOURCE_REACH)
+        .sort((a, b) => dist(a.position, this.village.position) - dist(b.position, this.village.position))[0];
+      if (!nearest) continue;
+
+      this.territory.incorporate({
+        key: `node:${nearest.id}`,
+        kind: 'claim',
+        position: { ...nearest.position },
+        radius: CLAIM_RADIUS,
+        link: { ...this.village.position },
+      });
+      nearest.state = NodeState.Reachable;
+    }
+  }
+
+  // --------------------------------------------------------------- expansion
+
+  /**
+   * Take a frontier opportunity into the realm. The one deliberate act of
+   * expansion the game has, and the only thing that ever moves the border
+   * outward.
+   *
+   * Note what this does *not* do. It does not connect the site, staff it,
+   * settle it, or deliver anything from it. The player is buying the right to
+   * develop somewhere, not its output — a claimed deposit three valleys away
+   * with no road to it produces exactly nothing, and will go on producing
+   * nothing until the player runs a road out and the simulation decides
+   * working it is worth someone's time. That separation is the point: the
+   * player shapes the conditions, the simulation decides what comes of them.
+   */
+  claim(node: ResourceNode): boolean {
+    const candidate = this.frontier.find((c) => c.node === node);
+    if (!candidate) return false;
+    if (this.expansionCapacity < candidate.cost) return false;
+
+    this.expansionCapacity -= candidate.cost;
+
+    // The ground between the realm and what it just took in becomes the
+    // realm's too — see `territory.ts`. Without that a claim would read as a
+    // detached bubble appearing in the wilderness rather than the border
+    // growing out to meet something.
+    const from = this.territory.nearestHolding(node.position);
+    this.territory.incorporate({
+      key: `node:${node.id}`,
+      kind: 'claim',
+      position: { ...node.position },
+      radius: CLAIM_RADIUS,
+      link: from ? { ...from.position } : null,
+    });
+
+    node.state = NodeState.Reachable;
+    this.events.push({ type: 'claimed', at: { ...node.position }, name: node.name, cost: candidate.cost });
+
+    // The border moved, so both what the realm encloses and what it can see
+    // past itself have changed. Generation first — an offer must never be
+    // made over ground that has not been decided yet.
+    this.expandGeneration();
+    this.absorbEnclosedNodes();
+    this.refreshFrontier();
+    this.cachedVersion = -1;
+    return true;
+  }
+
+  /** What it would cost to take this site in right now, or null if it is not on offer. */
+  claimCost(node: ResourceNode): number | null {
+    return this.frontier.find((c) => c.node === node)?.cost ?? null;
+  }
+
+  /** What the civilisation is currently earning toward its next expansion, and from what. */
+  get capacityRate(): CapacityBreakdown {
+    return capacityRatePerMin(this.traders);
   }
 
   /**
@@ -196,12 +351,12 @@ export class World {
    * seed's outcome, sparse or rich, weird or ordinary — except for this one
    * guarantee: a fresh village has to be able to reach *something* to eat
    * and *something* to build with, or the game is over before the player
-   * has drawn a single road. See `WorldGenerator.ensureStartingResources`
+   * has drawn a single road. See `NodeSource.ensureStartingResources`
    * and point 15 of the brief.
    */
   private ensureStartingResources(): void {
     const summary = this.nodes.map((n) => ({ resource: n.resource, x: n.position.x, y: n.position.y }));
-    const forced = this.generator.ensureStartingResources(this.village.position, summary, STARTING_RESOURCE_REACH);
+    const forced = this.source.ensureStartingResources(this.village.position, summary, STARTING_RESOURCE_REACH);
     for (const cfg of forced) this.nodes.push(new ResourceNode(cfg));
   }
 
@@ -231,15 +386,62 @@ export class World {
    * decision gated on the civilisation's actual reach, not a side effect of
    * some unrelated query happening to land nearby.
    */
-  private generateAround(centre: Vec2, radius: number): void {
+  /**
+   * Decide the world out to `radius`, and *show* it out to `uncoverRadius`.
+   *
+   * The two are deliberately different. Where deposits are has to be settled
+   * well ahead of anything that might ask about them — the frontier search
+   * will happily look a couple of thousand units past the border when the
+   * country nearby is empty, and an offer must never be made over ground that
+   * has not been decided. What the player can *see*, though, should stay
+   * close to the realm, or the map hands itself over and "what's beyond our
+   * frontier?" stops being a question worth asking.
+   */
+  private generateAround(centre: Vec2, radius: number, uncoverRadius = radius): void {
     const x0 = Math.max(0, centre.x - radius);
     const y0 = Math.max(0, centre.y - radius);
     const x1 = Math.min(this.width, centre.x + radius);
     const y1 = Math.min(this.height, centre.y + radius);
-    const created = this.generator.ensureNodesGenerated(x0, y0, x1, y1);
+    const created = this.source.ensureNodesGenerated(x0, y0, x1, y1);
     for (const cfg of created) this.nodes.push(new ResourceNode(cfg));
 
-    this.uncoverGround(centre, radius, x0, y0, x1, y1);
+    this.uncoverGround(
+      centre,
+      uncoverRadius,
+      Math.max(0, centre.x - uncoverRadius),
+      Math.max(0, centre.y - uncoverRadius),
+      Math.min(this.width, centre.x + uncoverRadius),
+      Math.min(this.height, centre.y + uncoverRadius),
+    );
+  }
+
+  /**
+   * Show the whole map at once, for a world that has edges.
+   *
+   * Procedural country goes on forever, so drawing it has to be rationed —
+   * uncovering it all is not even a coherent request. An authored map is a
+   * finite, deliberate thing that somebody laid out, and hiding it serves
+   * nobody: it is the board, and you look at a board. It is also the case
+   * that these maps exist to be experimented on, and an experiment you can
+   * only see a corner of is a poor one.
+   *
+   * This reveals *ground*, and nothing else. Which sites exist out there and
+   * whether they can be claimed is still governed by `survey.ts` and the
+   * frontier, because that is a question about what the civilisation knows
+   * and owns rather than about what the player is allowed to look at — see
+   * "Knowledge is not ownership" in the vision.
+   */
+  private uncoverWholeMap(): void {
+    const size = TERRAIN_CHUNK_SIZE;
+    for (let cy = 0; cy * size < this.height; cy++) {
+      for (let cx = 0; cx * size < this.width; cx++) {
+        const key = `${cx},${cy}`;
+        if (this.uncoveredChunks.has(key)) continue;
+        this.uncoveredChunks.add(key);
+        this.terrain.ensureGenerated(cx * size, cy * size, (cx + 1) * size - 1, (cy + 1) * size - 1);
+        this.freshlyUncovered.push({ cx, cy });
+      }
+    }
   }
 
   /**
@@ -304,44 +506,88 @@ export class World {
    * ground and its deposits were decided a while ago.
    */
   private expandGeneration(): void {
-    for (const centre of this.influenceCentres()) {
-      this.generateAround(centre.position, centre.reach + GENERATION_MARGIN);
+    // Ownership decides how far the world has to be *decided*; the survey
+    // decides how far it is *shown*. Both are driven from here so that
+    // "generated" can never lag "visible" — an offer, or a deposit drawn on
+    // the map, over ground that has not been decided yet is a hard bug.
+    for (const holding of this.territory.reachPoints(0)) {
+      this.generateAround(holding.position, holding.reach + FRONTIER_SEARCH_LIMIT + GENERATION_MARGIN, 0);
+    }
+
+    // Sampled along a corridor rather than run per point: a road polyline
+    // carries a point every few units, and each one would otherwise trigger
+    // its own chunk sweep over ground the previous point had just covered.
+    // One sample per horizon's-width is enough for the discs to overlap into
+    // a continuous band.
+    for (const source of this.surveySources()) {
+      for (const point of sampleAlong(source.path, source.horizon)) {
+        this.generateAround(point, source.horizon + GENERATION_MARGIN, source.horizon);
+      }
+    }
+
+    this.surveyCountry();
+  }
+
+  /**
+   * Everywhere the realm can see from, and how far — see `survey.ts` for why
+   * this is deliberately not the same list as what the realm *holds*.
+   *
+   * Seats see furthest and their horizon grows with their tier, claims see
+   * their own neighbourhood, and every stretch of road surveys the corridor
+   * it runs through. That last one is what makes "roads open the world"
+   * literally true rather than merely stated: a trunk road pays for itself
+   * twice, in what it connects and in everything it finds along the way. It
+   * reopens no exploit, because a road still grants nothing — it cannot
+   * anchor on unclaimed ground, and what it reveals still has to be bought.
+   */
+  private surveySources(): SurveySource[] {
+    const sources: SurveySource[] = [];
+
+    for (const trader of this.traders) {
+      sources.push({ path: [trader.position], horizon: TIER_HORIZON[trader.tier] });
+    }
+    for (const node of this.nodes) {
+      if (node.isClaimed) sources.push({ path: [node.position], horizon: CLAIM_HORIZON });
+    }
+    for (const edge of this.network.edges) {
+      sources.push({ path: edge.points, horizon: ROAD_HORIZON });
+    }
+
+    return sources;
+  }
+
+  /**
+   * Mark everything the realm can currently see. Monotone: `surveyed` is
+   * never cleared, so a road that later grows over leaves its discoveries
+   * behind, which is exactly why a scouting track is worth drawing at all.
+   */
+  private surveyCountry(): void {
+    const sources = this.surveySources();
+    for (const node of this.nodes) {
+      if (node.surveyed) continue;
+      if (!isSurveyed(sources, node.position)) continue;
+      node.surveyed = true;
+      this.events.push({ type: 'discovered', at: { ...node.position }, name: node.name });
     }
   }
 
   /**
-   * Everywhere the civilisation currently reaches from, and how far. The
-   * village, every settlement that has taken hold, and every node the road
-   * network actually reaches — a civilisation expands from all of them at
-   * once, not just from wherever it started.
+  /**
+   * Everywhere the realm holds ground, and how far past it the world needs
+   * to be decided.
    *
-   * A *connected* node counts for `CONNECTED_NODE_REACH` whether or not it
-   * has levelled up yet, and that is the safeguard against the frontier
-   * closing. Previously a node opened ground only once its own level had
-   * earned it some (level one gives exactly zero), so reach grew only with
-   * tier — which needs development, which needs wealth, which needs the
-   * industries and deposits that are on the far side of the frontier you
-   * are trying to widen. A civilisation that plateaued below the next tier
-   * could reach nothing new ever again, and no amount of road-building
-   * helped, which is a miserable thing to be told by a game whose only verb
-   * is building roads. Now a road out to a working site opens the country
-   * around that site, so the player always has a move: reach a little
-   * further, and see a little further.
+   * This used to be a list of *influence* discs — one per place, sized by
+   * its tier, plus one per connected node, plus (briefly) one per stretch of
+   * road. All three were the same mistake in different clothes: they let the
+   * civilisation reach further merely by doing well, or by the player
+   * drawing a free road, so the map opened itself and the player was never
+   * asked where the realm should grow. Reach is now something bought
+   * deliberately (see `claim`), and this only reports what is already held.
+   *
+   * The margin covers the frontier as well as the border, because the
+   * frontier system has to be able to offer sites the player has not taken
+   * yet — the ground under an *offer* must already exist.
    */
-  private influenceCentres(): Array<{ position: Vec2; reach: number }> {
-    return [
-      { position: this.village.position, reach: this.village.influenceRadius },
-      ...this.settlements
-        .filter((s) => s.influenceRadius > 0)
-        .map((s) => ({ position: s.position, reach: s.influenceRadius })),
-      // Additive rather than whichever is larger: a node's own levelling-up
-      // should push the frontier further than merely connecting it did, or
-      // shipping investment out to a remote site buys nothing you can see.
-      ...this.nodes
-        .filter((n) => n.isConnected)
-        .map((n) => ({ position: n.position, reach: CONNECTED_NODE_REACH + n.influenceRadius })),
-    ];
-  }
 
   // ---------------------------------------------------------------- queries
 
@@ -353,9 +599,21 @@ export class World {
     return this.nodes.filter((n) => n.isVisible);
   }
 
-  /** Everything a road may start or end on right now. */
+  /**
+   * Everything a road may start or end on right now.
+   *
+   * Claimed sites only. A frontier offer is drawn on the map and can be
+   * inspected, but a road cannot anchor on it — you cannot build to somewhere
+   * that is not yours. This is also what closes the old exploit where a free
+   * road run out into the wild was enough to reach whatever it touched.
+   */
   get connectableSites(): Site[] {
-    return [this.village, ...this.visibleNodes, ...this.settlements];
+    return [this.village, ...this.claimedNodes, ...this.settlements];
+  }
+
+  /** Sites the realm has taken in — the ones the simulation is allowed to use. */
+  get claimedNodes(): ResourceNode[] {
+    return this.nodes.filter((n) => n.isClaimed);
   }
 
   /** Everywhere goods can be delivered to. The village is not special here. */
@@ -417,9 +675,52 @@ export class World {
     return this.network.routeBetween(from, to);
   }
 
-  /** Roads cannot be laid across water; there are no bridges yet. */
+  /**
+   * Whether a road may be laid along this line.
+   *
+   * Two rules, and between them they are the whole of what water does to a
+   * network. A road may **bridge** a river — any crossing short enough that a
+   * bridge could really make it (`MAX_BRIDGE_SPAN`) — and may not run along
+   * water for longer than that, which is what stops "bridges exist" from
+   * meaning "roads may be drawn down the middle of a lake".
+   *
+   * And it may not leave the map. On a procedural world that is free, because
+   * there is no edge; on an authored one the ground past the border is
+   * modelled as deep water (see `RasterTerrain`), and without this a road
+   * could bridge off the edge into country nothing has ever described.
+   */
   canLayAlong(points: Vec2[]): boolean {
-    return !this.terrain.crossesImpassable(points);
+    for (const p of points) {
+      if (p.x < 0 || p.y < 0 || p.x > this.width || p.y > this.height) return false;
+    }
+    // Two kinds of water, asked two different ways, because they are two
+    // different shapes. Lakes and sea are area and live in the raster, so the
+    // question is how far a line runs through wet cells. A river is a line,
+    // so the question is what it actually crosses and how wide the water is
+    // there — see `RiverNetwork`.
+    return this.terrain.canCarryRoad(points) && this.rivers.canCross(points);
+  }
+
+  /**
+   * How hard a finished road is to walk, ground and bridges together.
+   *
+   * The ground gives a cost per unit length and the crossings give a lump of
+   * effort apiece, so they are added as effort — cost times length — and
+   * divided out once. Averaging the two separately would let a long road
+   * dilute its bridges away, which is precisely backwards: a bridge is a
+   * fixed expense that does not get cheaper because the road went further.
+   */
+  roadDifficulty(points: Vec2[]): number {
+    const ground = this.terrain.averageCost(points);
+    if (this.rivers.isEmpty) return ground;
+
+    let length = 0;
+    for (let i = 0; i + 1 < points.length; i++) {
+      length += Math.hypot(points[i + 1].x - points[i].x, points[i + 1].y - points[i].y);
+    }
+    if (length <= 0) return ground;
+
+    return ground + this.rivers.crossingEffort(points) / length;
   }
 
   drainEvents(): WorldEvent[] {
@@ -442,7 +743,7 @@ export class World {
     if (!created || created.length === 0) return false;
 
     for (const edge of created) {
-      edge.difficulty = this.terrain.averageCost(edge.points);
+      edge.difficulty = this.roadDifficulty(edge.points);
       // A newly cleared road shows faintly from the start, then has to be
       // walked to stay: unused, it fades back into the landscape.
       this.traffic.deposit(edge.points, WEAR_ON_BUILD);
@@ -503,27 +804,80 @@ export class World {
       }
     }
 
-    // Flat per-capita consumption was tried and reverted here: at today's
-    // population scale it drains faster than production can keep up,
-    // starving development instead of merely keeping storage honest. Only
-    // genuine excess — stock a place is sitting on well past what it could
-    // ever ask for — decays, so a settlement whose population (and so its
-    // target) has shrunk back down can't coast on yesterday's peak forever.
-    // Planks/stone blocks/tools are the exception — see `consumeProcessedGoods`.
+    // Everybody eats. `consume` draws every good down at exactly the rate
+    // the same place's demand is quoted at, which is what keeps `shortage` a
+    // live reading — see `economy.ts`. `decayExcessStorage` still handles the
+    // separate case of a *shrunken* place sitting on a bigger version of
+    // itself's leftovers, which consumption alone would take far too long to
+    // work off.
     for (const trader of this.traders) {
       decayExcessStorage(trader, dt);
-      consumeProcessedGoods(trader, dt);
+      consume(trader, dt);
     }
 
     this.traffic.decay(dt);
     this.emergence.update(dt, this.settlementContext());
     this.updatePopulation(dt);
 
+    this.accrueExpansionCapacity(dt);
+
     this.pruneTimer += dt;
     if (this.pruneTimer >= PRUNE_INTERVAL) {
       this.pruneTimer = 0;
       this.pruneAbandonedRoads();
-      this.revealNodes();
+      this.syncSeatFootprints();
+      // On a timer as well as on every claim. Recomputing only when the
+      // border moved looked sufficient and deadlocked the entire game: if the
+      // frontier came up empty for a moment — the ground just past the border
+      // not generated yet, every nearby site already taken — then nothing
+      // could be claimed, so the border never moved, so the frontier was
+      // never recomputed, and the civilisation banked capacity forever with
+      // nowhere to spend it. Observed going empty on day 61 and staying that
+      // way for the rest of the run with nine hundred capacity unspent.
+      this.refreshFrontier();
+    }
+  }
+
+  /**
+   * The civilisation earns toward its next expansion, continuously, purely
+   * from how well it is actually doing — see `expansion.ts` for what counts.
+   *
+   * Nothing here caps it. A player who banks capacity instead of spending it
+   * is making a real choice (wait for the iron, or take the forest now), and
+   * a ceiling would quietly turn that into "spend it or waste it", which is
+   * the opposite of the decision this system exists to create.
+   */
+  private accrueExpansionCapacity(dt: number): void {
+    this.expansionCapacity += (this.capacityRate.total / 60) * dt;
+  }
+
+  /**
+   * A place's own ground grows with the place. Not its *reach* — that is
+   * bought, and a settlement growing has never been allowed to widen the
+   * realm since this redesign — just how broadly it sits on country the realm
+   * already holds. A settlement that has taken hold inside the border also
+   * becomes a holding in its own right, which is what makes a thriving
+   * frontier town thicken the realm around itself instead of leaving the
+   * border pinched around the deposit it grew beside.
+   */
+  private syncSeatFootprints(): void {
+    this.territory.resize('village', this.village.footprintRadius);
+
+    for (const settlement of this.settlements) {
+      const key = `settlement:${settlement.id}`;
+      if (this.territory.has(key)) {
+        this.territory.resize(key, settlement.footprintRadius);
+        continue;
+      }
+      this.territory.incorporate({
+        key,
+        kind: 'seat',
+        position: { ...settlement.position },
+        radius: settlement.footprintRadius,
+        // Founded inside the realm by definition (see `settlementSystem.ts`),
+        // so there is no gap to bridge back to it.
+        link: null,
+      });
     }
   }
 
@@ -568,6 +922,37 @@ export class World {
    * ever remove the network the player has stopped using — never strand a
    * settlement that still depends on it.
    */
+  /**
+   * How little traffic a stretch of road may carry before it grows over —
+   * and the answer depends on whose ground it runs across.
+   *
+   * This is the border's job, and it is the one that makes the line on the
+   * map something the player can actually *feel* rather than merely see.
+   * Inside the realm a road is infrastructure: the realm keeps it up, and it
+   * survives a quiet season. Outside, it is a track somebody once walked, and
+   * the country takes it back unless it stays genuinely busy.
+   *
+   * The obvious alternative — territory-weighted wear decay in
+   * `TrafficField` — says the same thing and costs far more: wear is a dense
+   * per-patch field swept every tick, so it would need a cached
+   * held-patch set rebuilt whenever the border moved. Abandonment already
+   * runs on a slow timer over a few dozen edges, and it is where "has this
+   * road gone" is actually decided, so the rule belongs here.
+   *
+   * What this adds to play is the second half of the scouting loop the survey
+   * (`survey.ts`) opens. A road drawn out into unclaimed country is worth
+   * drawing — it surveys the corridor it crosses, and what it finds stays
+   * found. But it is not free forever: keep it, and you must either give it
+   * real traffic or claim the ground it crosses. A track that has done its
+   * job and lost its traffic returning to grass is exactly right, and it is
+   * now the border, not a global constant, that decides how patient the
+   * country is about it.
+   */
+  private abandonThreshold(edge: RoadEdge): number {
+    const middle = edge.points[Math.floor(edge.points.length / 2)];
+    return this.territory.contains(middle) ? ABANDON_BELOW : ABANDON_BELOW * OUTSIDE_ABANDON_FACTOR;
+  }
+
   private pruneAbandonedRoads(): void {
     const inUse = new Set<RoadEdge>();
 
@@ -581,7 +966,7 @@ export class World {
 
     for (const edge of [...this.network.edges]) {
       if (inUse.has(edge) || !edge.isBuilt) continue;
-      if (this.traffic.weakestAlong(edge.points) >= ABANDON_BELOW) continue;
+      if (this.traffic.weakestAlong(edge.points) >= this.abandonThreshold(edge)) continue;
 
       this.network.abandon(edge);
       this.events.push({ type: 'roadLost', points: edge.points.map((p) => ({ ...p })) });
@@ -615,9 +1000,9 @@ export class World {
     this.cachedVersion = this.network.version;
 
     for (const node of this.nodes) {
-      const route = node.isVisible ? this.network.routeBetween(this.village, node) : null;
+      const route = node.isClaimed ? this.network.routeBetween(this.village, node) : null;
       this.routeCache.set(node, route);
-      if (!node.isVisible) continue;
+      if (!node.isClaimed) continue;
 
       if (!route) {
         // Cut off. The workers stay and keep producing; nobody can reach the
@@ -633,18 +1018,56 @@ export class World {
     }
   }
 
-  /** Nodes inside the civilisation's influence become visible and connectable. */
-  private revealNodes(): void {
-    // Every established place opens up the country around it, so the map is
-    // unlocked by the network spreading rather than by the first village
-    // alone — and it is the same set generation works from (see
-    // `influenceCentres`), so nothing can ever be revealed before it exists.
-    const centres = this.influenceCentres();
+  /**
+   * Work out what the frontier is currently offering, and show exactly that.
+   *
+   * This replaces the old "reveal everything inside our influence" sweep, and
+   * the difference is the whole point of the redesign. Before, prospering
+   * widened a radius and every deposit that fell inside it became the
+   * civilisation's to use, for free, forever — so the map revealed itself and
+   * the only question left was the order you got round to things in. Now a
+   * small number of sites are held up as *opportunities* (see
+   * `expansion.ts`'s `selectFrontier`), and nothing becomes the realm's
+   * except by being paid for.
+   *
+   * Anything that stops being offered goes back to hidden. A frontier offer
+   * is the realm's current attention, not a permanent discovery: claim
+   * somewhere and the country you are looking at genuinely changes, which is
+   * what keeps "what's beyond our border?" a live question instead of a list
+   * that only ever grows.
+   */
+  private refreshFrontier(): void {
+    const candidates = selectFrontier(this.nodes, this.territory, this.terrain, this.seed);
+    this.frontier = candidates;
 
+    const offered = new Set(candidates.map((c) => c.node));
     for (const node of this.nodes) {
-      if (node.state !== NodeState.Hidden) continue;
-      if (!centres.some((c) => dist(node.position, c.position) <= c.reach)) continue;
+      if (node.isClaimed) continue;
+      if (offered.has(node)) {
+        if (node.state !== NodeState.Frontier) {
+          node.state = NodeState.Frontier;
+          this.events.push({ type: 'discovered', at: { ...node.position }, name: node.name });
+        }
+      } else if (node.state === NodeState.Frontier) {
+        node.state = NodeState.Hidden;
+      }
+    }
+  }
 
+  /**
+   * Anything the realm already surrounds is already ours.
+   *
+   * Two jobs. It gives the opening village the sites `ensureStartingResources`
+   * guaranteed it — a start where you must earn capacity before you can touch
+   * a single deposit is not a start, it is a wait. And it means a claim that
+   * takes in ground happening to contain a second site does not leave that
+   * site sitting unclaimed *inside* the border, which would read as an
+   * obvious bug.
+   */
+  private absorbEnclosedNodes(): void {
+    for (const node of this.nodes) {
+      if (node.isClaimed) continue;
+      if (!this.territory.contains(node.position)) continue;
       node.state = NodeState.Reachable;
       this.events.push({ type: 'discovered', at: { ...node.position }, name: node.name });
     }
@@ -688,12 +1111,13 @@ export class World {
     // "bootstrap" priority (see `systems.ts`) already having fired, nothing
     // ever bootstrapped it again. A soft, civilisation-wide ceiling gets the
     // same "growth needs housing" feel without that specific failure mode.
-    const totalSustainable = this.traders.reduce((sum, trader) => sum + sustainablePopulation(trader), 0);
+    const totalSustainable = sustainablePopulationAcross(this.traders);
     const totalHousing = this.traders.reduce((sum, trader) => sum + housingCapacity(trader), 0);
     // `sustainablePopulation` is deliberately throughput-only — not stock —
-    // so a place that stops actually being fed can't hide behind a shelf
-    // that (by design, see `economy.ts`'s `consume`) never depletes on its
-    // own. That's exactly right once the game is under way, but it also
+    // so a place that stops actually being fed can't coast on a full shelf
+    // for as long as that shelf lasts; how many people a civilisation can
+    // support is a question about the harvest, not the larder. That's
+    // exactly right once the game is under way, but it also
     // means a founding population reads as "unsustainable" from the very
     // first tick, before anyone could possibly have built a road yet — see
     // `foundingGraceRemaining`. The floor is wall-clock, not storage-based,
@@ -749,12 +1173,60 @@ export class World {
     // every time — see `dependentDebt` for how the *next* births pay that
     // back instead.
     const pool = [...this.villagers].reverse();
-    const leaving = pool.find((v) => v.isFree && v.isDependent) ?? pool.find((v) => v.isFree);
+    const leaving = this.pickDeparture(pool);
     if (!leaving) return;
     if (leaving.isDependent) this.dependentDebt--;
     else this.dependentDebt++;
     const index = this.villagers.indexOf(leaving);
     this.villagers.splice(index, 1);
+  }
+
+  /**
+   * Who actually leaves when the civilisation can no longer support everyone.
+   *
+   * Two problems with the old rule ("a free dependent, else anyone free").
+   *
+   * A dependent is *always* free — they never take a job — so a shrink
+   * essentially always took one, and since population spends its life
+   * oscillating around whatever the food supply can carry, repeated
+   * shrink-and-regrow cycles ground the dependent share to literally zero.
+   * At forty-four residents there were no dependents at all, which quietly
+   * inflated the labour force by half against the 70/30 split it is supposed
+   * to hold. Preferring whichever side of that split is currently
+   * *over-represented* fixes it at the point of departure, and costs nothing:
+   * both candidates are people with no job either way.
+   *
+   * Worse, once every working adult held a post there was nobody free at all,
+   * so nothing could leave — and the civilisation simply froze, forty-four
+   * people living off food for thirty, indefinitely, with the readout plainly
+   * saying so. A famine has to be able to resolve. It resolves the way it
+   * would in life: the workshop closes before the farm does. Taking someone
+   * off a *resource node* is the thing that must never happen here — that was
+   * tried, and cutting food production to fix a population overhang is a real
+   * death spiral (see `dependentDebt`) — but an industry is discretionary
+   * work by definition, and shutting one is exactly what a place short of
+   * food would do.
+   */
+  private pickDeparture(pool: Villager[]): Villager | null {
+    const dependents = this.villagers.filter((v) => v.isDependent).length;
+    const wanted = Math.round(this.villagers.length * (1 - WORKING_POPULATION_SHARE));
+    const dependentFirst = dependents > wanted;
+
+    const free = pool.filter((v) => v.isFree);
+    const preferred = free.find((v) => v.isDependent === dependentFirst);
+    if (preferred) return preferred;
+    if (free.length > 0) return free[0];
+
+    // Nobody idle anywhere. Close a workshop rather than let the shortfall
+    // stand forever.
+    const worker = pool.find((v) => v.industryWorkplace !== null && v.role === VillagerRole.Worker);
+    if (!worker) return null;
+
+    const industry = worker.industryWorkplace!;
+    const index = industry.workers.indexOf(worker);
+    if (index >= 0) industry.workers.splice(index, 1);
+    worker.release();
+    return worker;
   }
 
   /** Every trader's `population` field is a cache of this, refreshed once a tick. */
@@ -807,6 +1279,8 @@ export class World {
       nodes: this.nodes,
       village: this.village,
       settlements: this.settlements,
+      population: this.villagers.length,
+      held: (point) => this.territory.contains(point),
       hours: this.hours,
       found: (patch, position, trade, potential, origin) =>
         this.foundSettlement(patch, position, trade, potential, origin),
@@ -864,7 +1338,11 @@ export class World {
     }
 
     this.cachedVersion = -1;
-    this.revealNodes();
+    // A new seat thickens the realm around itself, which can enclose sites and
+    // shifts what the frontier is worth offering.
+    this.syncSeatFootprints();
+    this.absorbEnclosedNodes();
+    this.refreshFrontier();
     this.events.push({
       type: 'settlementFounded',
       at: { ...settlement.position },

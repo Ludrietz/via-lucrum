@@ -1,168 +1,175 @@
 import Phaser from 'phaser';
 import type { Vec2 } from '../sim/geometry';
-import { CELL_SIZE, TERRAIN_CHUNK_SIZE, TerrainType } from '../sim/terrain';
+import { TERRAIN_CHUNK_SIZE } from '../sim/terrain';
 import type { World } from '../sim/world';
-import { COLORS, DEPTH } from './theme';
+import { bakeRelief } from './relief';
+import { DEPTH } from './theme';
+import { createVegetationTextures, scatter, Stand } from './vegetation';
 
-/** Tiny deterministic PRNG so a chunk's scatter looks hand-drawn but never changes. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+/**
+ * The landscape, built one generated chunk at a time.
+ *
+ * There is no upfront "draw the whole map" pass — there is no whole map, only
+ * whatever ground the simulation has actually uncovered (see `TerrainField`
+ * and `World.uncoverGround`) — so this layer watches for newly uncovered
+ * chunks and turns each one into a piece of drawn landscape the moment it
+ * appears.
+ *
+ * ## Two layers, split by what can change
+ *
+ * The ground is painted once into a texture (`relief.ts`) and then left
+ * alone, because everything in it follows from elevation and moisture and
+ * neither of those ever changes: hills are not felled and rivers do not move.
+ * The cover on top of it (`vegetation.ts`) is kept as live, individually
+ * addressable trees, because that is precisely the part the simulation is
+ * meant to be able to change — a settlement that grows clears the woodland it
+ * grows into.
+ *
+ * Baking the lot would have been simpler and would have meant that clearing
+ * one acre repainted a county. Baking none of it would have meant paying the
+ * full cost of the landscape every frame forever, for a landscape that is
+ * almost entirely static. The split gets both.
+ */
 
-const CELLS_PER_CHUNK = TERRAIN_CHUNK_SIZE / CELL_SIZE;
-
-const TERRAIN_FILL: Record<TerrainType, { color: number; alpha: number }> = {
-  [TerrainType.Plains]: { color: COLORS.plains, alpha: 0.14 },
-  [TerrainType.Forest]: { color: COLORS.forest, alpha: 0.24 },
-  [TerrainType.Hills]: { color: COLORS.hill, alpha: 0.26 },
-  [TerrainType.Mountains]: { color: COLORS.mountain, alpha: 0.34 },
-  [TerrainType.Water]: { color: COLORS.water, alpha: 0.4 },
-};
-
-/** How often a cell of each type gets a scatter glyph, and how big it draws. */
-const SCATTER: Partial<Record<TerrainType, { chance: number; size: number }>> = {
-  [TerrainType.Forest]: { chance: 0.5, size: 7 },
-  [TerrainType.Hills]: { chance: 0.3, size: 13 },
-  [TerrainType.Mountains]: { chance: 0.75, size: 20 },
-};
-
-interface ChunkView {
-  gfx: Phaser.GameObjects.Graphics;
+interface Chunk {
+  relief: Phaser.GameObjects.Image;
+  stand: Stand;
   bounds: Phaser.Geom.Rectangle;
 }
 
+interface Ground {
+  cx: number;
+  cy: number;
+  relief: Phaser.GameObjects.Image;
+}
+
 /**
- * The landscape, built one generated chunk at a time. There is no upfront
- * "draw the whole map" pass any more — there is no whole map, only whatever
- * ground the simulation has actually generated (see `TerrainField` and
- * `WorldGenerator`) — so this layer just watches for newly generated chunks
- * every frame and turns each one into its own small piece of drawn terrain
- * the moment it appears, then leaves it alone forever after.
+ * Building a chunk is two separate jobs of comparable cost — painting the
+ * ground, and working out where its trees stand — and uncovering is bursty: a
+ * single expansion can reveal a dozen chunks at once. Doing a whole chunk in
+ * one frame meant paying for both at once and dropping a frame every time the
+ * realm grew.
+ *
+ * So each frame does one job, not one chunk, and alternates which queue it
+ * takes from. Alternating rather than draining the ground first matters: under
+ * sustained expansion a strict priority would starve the other queue
+ * completely, and the map would fill in as bare painted ground with the woods
+ * arriving minutes later. Taking turns means both queues drain at worst half
+ * speed, and a chunk is never left half-built for long.
  */
 export class TerrainLayer {
-  private readonly chunks = new Map<string, ChunkView>();
+  private readonly chunks = new Map<string, Chunk>();
+  /** Uncovered ground not yet painted, oldest first. */
+  private readonly needGround: Array<{ cx: number; cy: number }> = [];
+  /** Painted ground not yet planted, oldest first. */
+  private readonly needTrees: Ground[] = [];
+  /** Which queue had the last turn, so neither can starve the other. */
+  private plantedLast = false;
 
   constructor(private readonly scene: Phaser.Scene, private readonly world: World) {
-    this.sync();
+    createVegetationTextures(scene);
+    this.update();
   }
 
   /**
-   * Pick up any chunks generated since last frame, and hide whatever the
+   * Take on newly uncovered ground, paint some of it, and hide whatever the
    * camera can't see. Phaser skips invisible objects entirely, which is what
    * keeps an unbounded world affordable: however far the civilisation has
-   * spread, only the handful of chunks actually on screen are ever drawn.
+   * spread, only the chunks actually on screen are ever drawn.
    */
   update(): void {
-    this.sync();
+    for (const chunk of this.world.drainUncoveredChunks()) this.needGround.push(chunk);
+
+    if (this.plantedLast ? !this.paintGround() : !this.plantTrees()) {
+      // Preferred queue was empty, so take the other one rather than idle.
+      if (this.plantedLast) this.plantTrees();
+      else this.paintGround();
+    }
+    this.plantedLast = !this.plantedLast;
 
     const view = this.scene.cameras.main.worldView;
     for (const chunk of this.chunks.values()) {
-      chunk.gfx.setVisible(Phaser.Geom.Rectangle.Overlaps(view, chunk.bounds));
+      const visible = Phaser.Geom.Rectangle.Overlaps(view, chunk.bounds);
+      chunk.relief.setVisible(visible);
+      chunk.stand.setVisible(visible);
     }
   }
 
   /**
-   * Draws what the civilisation has *uncovered*, not everything the
-   * generator happens to have computed. Those are different sets: terrain
-   * chunks get generated by any query that lands in them, including deposit
-   * placement sampling ground a thousand units out, so drawing every
-   * generated chunk uncovered the map in scattered islands rather than as a
-   * frontier spreading from the realm. See `World.uncoverGround`.
+   * Clear woodland from a patch of ground — what a settlement does to the
+   * trees where it is about to stand.
+   *
+   * Lives here rather than in `vegetation.ts` because only this layer knows
+   * which chunks a patch of ground falls in, and a clearing near a chunk
+   * corner has to reach into all four of them. Chunks that have not been
+   * painted yet need no special handling: their trees are scattered from the
+   * terrain when they are eventually built, so ground the simulation cleared
+   * before anyone looked at it comes up already clear only if the *terrain*
+   * says so. Clearing is presentation, and a settlement that outruns the
+   * renderer is a problem worth having before this matters.
    */
-  private sync(): void {
-    for (const { cx, cy } of this.world.drainUncoveredChunks()) this.buildChunk(cx, cy);
-  }
+  fellTrees(centre: Vec2, radius: number): number {
+    const size = TERRAIN_CHUNK_SIZE;
+    let felled = 0;
 
-  private buildChunk(cx: number, cy: number): void {
-    const key = `${cx},${cy}`;
-    if (this.chunks.has(key)) return;
-
-    const originCol = cx * CELLS_PER_CHUNK;
-    const originRow = cy * CELLS_PER_CHUNK;
-    const originX = originCol * CELL_SIZE;
-    const originY = originRow * CELL_SIZE;
-
-    const gfx = this.scene.add.graphics().setDepth(DEPTH.terrain);
-    // Seeded off the chunk's own coordinates and the world seed, so scatter
-    // is stable forever but never repeats identically chunk to chunk.
-    const rand = mulberry32((cx * 928_371 + cy * 1_299_721 + this.world.seed * 7) >>> 0);
-
-    gfx.fillStyle(COLORS.parchment, 1);
-    gfx.fillRect(originX, originY, TERRAIN_CHUNK_SIZE, TERRAIN_CHUNK_SIZE);
-
-    for (let ly = 0; ly < CELLS_PER_CHUNK; ly++) {
-      for (let lx = 0; lx < CELLS_PER_CHUNK; lx++) {
-        const sample = this.world.terrain.sampleAtCell(originCol + lx, originRow + ly);
-        const worldX = originX + lx * CELL_SIZE;
-        const worldY = originY + ly * CELL_SIZE;
-
-        const fill = TERRAIN_FILL[sample.type];
-        gfx.fillStyle(fill.color, fill.alpha);
-        gfx.fillRect(worldX, worldY, CELL_SIZE + 0.6, CELL_SIZE + 0.6);
-
-        const scatter = SCATTER[sample.type];
-        if (!scatter || rand() > scatter.chance) continue;
-
-        const at: Vec2 = {
-          x: worldX + CELL_SIZE / 2 + (rand() - 0.5) * CELL_SIZE * 0.8,
-          y: worldY + CELL_SIZE / 2 + (rand() - 0.5) * CELL_SIZE * 0.8,
-        };
-        const size = scatter.size * (0.7 + rand() * 0.6);
-        if (sample.type === TerrainType.Forest) this.tree(gfx, at, size);
-        else if (sample.type === TerrainType.Hills) this.hill(gfx, at, size);
-        else this.peak(gfx, at, size);
+    for (let cy = Math.floor((centre.y - radius) / size); cy <= Math.floor((centre.y + radius) / size); cy++) {
+      for (let cx = Math.floor((centre.x - radius) / size); cx <= Math.floor((centre.x + radius) / size); cx++) {
+        felled += this.chunks.get(`${cx},${cy}`)?.stand.fell(centre, radius) ?? 0;
       }
     }
 
-    this.faintGrid(gfx, originX, originY);
+    return felled;
+  }
 
-    this.chunks.set(key, {
-      gfx,
+  /** Paint one chunk's ground. Returns false if there was none waiting. */
+  private paintGround(): boolean {
+    const next = this.needGround.shift();
+    if (!next) return false;
+
+    const { cx, cy } = next;
+    if (this.chunks.has(`${cx},${cy}`)) return true;
+
+    const { key, texelSize, bleed } = bakeRelief(this.scene, this.world.terrain, cx, cy, this.world.rivers.drawsOwnWater);
+    const relief = this.scene.add
+      // Offset by the bleed, so the chunk's own ground still lands exactly on
+      // its own square and only the overlap spills onto its neighbours.
+      .image(cx * TERRAIN_CHUNK_SIZE - bleed, cy * TERRAIN_CHUNK_SIZE - bleed, key)
+      .setOrigin(0, 0)
+      // The texture is deliberately coarser than the screen — the ground it
+      // paints is soft-edged and has nothing in it that wants to be crisp, so
+      // letting the GPU stretch it smoothly costs nothing and saves the memory
+      // that painting at screen resolution would have eaten. Sharpness in this
+      // map comes from the canopy and the linework on top, exactly as it does
+      // on a real painted one.
+      .setScale(texelSize)
+      .setDepth(DEPTH.terrain);
+
+    this.needTrees.push({ cx, cy, relief });
+    return true;
+  }
+
+  /** Plant one chunk's trees. Returns false if there was none waiting. */
+  private plantTrees(): boolean {
+    const next = this.needTrees.shift();
+    if (!next) return false;
+
+    const { cx, cy, relief } = next;
+    const originX = cx * TERRAIN_CHUNK_SIZE;
+    const originY = cy * TERRAIN_CHUNK_SIZE;
+
+    const stand = new Stand(
+      this.scene,
+      originX,
+      originY,
+      scatter(this.scene, this.world.terrain, originX, originY, TERRAIN_CHUNK_SIZE, this.world.seed),
+      DEPTH.vegetation,
+    );
+
+    this.chunks.set(`${cx},${cy}`, {
+      relief,
+      stand,
       bounds: new Phaser.Geom.Rectangle(originX, originY, TERRAIN_CHUNK_SIZE, TERRAIN_CHUNK_SIZE),
     });
-  }
-
-  private tree(g: Phaser.GameObjects.Graphics, at: Vec2, s: number): void {
-    g.fillStyle(COLORS.forest, 0.34);
-    g.fillTriangle(at.x, at.y - s * 1.5, at.x - s * 0.72, at.y + s * 0.6, at.x + s * 0.72, at.y + s * 0.6);
-    g.fillStyle(COLORS.hill, 0.34);
-    g.fillRect(at.x - 1, at.y + s * 0.5, 2, s * 0.45);
-  }
-
-  private hill(g: Phaser.GameObjects.Graphics, at: Vec2, s: number): void {
-    g.lineStyle(2.4, COLORS.hill, 0.45);
-    g.beginPath();
-    g.moveTo(at.x - s, at.y + s * 0.4);
-    g.lineTo(at.x, at.y - s * 0.45);
-    g.lineTo(at.x + s, at.y + s * 0.4);
-    g.strokePath();
-  }
-
-  /** A peak with a hatched shadow face, the way old maps mark high ground. */
-  private peak(g: Phaser.GameObjects.Graphics, at: Vec2, s: number): void {
-    g.fillStyle(COLORS.parchmentLight, 0.55);
-    g.fillTriangle(at.x, at.y - s, at.x - s * 0.85, at.y + s * 0.55, at.x + s * 0.85, at.y + s * 0.55);
-
-    g.fillStyle(COLORS.mountain, 0.5);
-    g.fillTriangle(at.x, at.y - s, at.x + s * 0.85, at.y + s * 0.55, at.x + s * 0.1, at.y + s * 0.55);
-
-    g.lineStyle(2, COLORS.mountain, 0.8);
-    g.beginPath();
-    g.moveTo(at.x - s * 0.85, at.y + s * 0.55);
-    g.lineTo(at.x, at.y - s);
-    g.lineTo(at.x + s * 0.85, at.y + s * 0.55);
-    g.strokePath();
-  }
-
-  /** A whisper of a border round the chunk, so the eye has something to read besides colour changes. */
-  private faintGrid(g: Phaser.GameObjects.Graphics, x: number, y: number): void {
-    g.lineStyle(1, COLORS.ink, 0.03);
-    g.strokeRect(x, y, TERRAIN_CHUNK_SIZE, TERRAIN_CHUNK_SIZE);
+    return true;
   }
 }

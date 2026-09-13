@@ -34,16 +34,26 @@ Oakridge sits in the middle of a wilderness with eight resource sites scattered
 around it. Only what falls inside the village's **influence** exists on the map
 at all.
 
-1. Drag from the village to a site to draw a curved road. Roads are free.
+1. Drag from a site to draw a curved road. Roads are free, always — they
+   connect places, and that is *all* they do. A road may start anywhere the
+   network already reaches and end wherever you let go.
 2. A villager walks out and becomes a lumberjack, miner, stonecutter or farmer.
    They stay there for good.
 3. The site starts producing, and goods pile up on site.
 4. Villagers who are *not* posted to a workplace automatically become
    transporters: they walk the network, load, come back, and deposit.
-5. Food lets the population grow; wood, food, stone and iron let the village
-   level up.
-6. A higher level widens the influence, revealing new sites, and the network
-   extends again.
+5. Food and timber together let the population grow — a place needs both, and
+   whichever is scarcer is the one setting the ceiling. Stone and iron are
+   what it builds and arms itself with.
+6. A civilisation doing well earns **Expansion Capacity**. Beyond your border
+   sit a few frontier sites, each with a price. Spend the capacity on one and
+   the realm grows out to take it in — and a fresh set of opportunities
+   appears past the new border.
+
+Claiming a site gives you the ground, not the goods. It still needs a road,
+and it still needs people who think working it is worth their time. You decide
+where the civilisation invests its future; the simulation decides how that
+turns out.
 
 The one thing that never gets easier is labour. Every worker you post is a
 villager who is no longer carrying anything, and the village refuses to staff a

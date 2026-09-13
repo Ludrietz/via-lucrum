@@ -64,25 +64,29 @@ export function tierIndex(tier: Tier): number {
 }
 
 /**
- * How far a place's reach extends, before roads add anything to it — and
- * therefore how much country it reveals and keeps generated around itself
- * (see `World.influenceCentres`).
+ * How much ground a place *holds* — the size of its own presence on the map,
+ * not its reach.
  *
- * Strictly increasing, which it embarrassingly wasn't: Hamlet had been
- * bumped to 960 as a one-off fix for a slow opening while Village sat at
- * 660, so the *first* promotion a place ever earned made its reach shrink
- * by a third. Nothing broke loudly — revealed nodes stay revealed — but it
- * quietly inverted the core loop this ladder exists for, where growing is
- * what lets you reach further. The opening is still generous (a hamlet can
- * see a decent way) but every rung now genuinely opens more ground than
- * the one below it.
+ * This used to be `TIER_INFLUENCE`, and it decided which resource sites the
+ * civilisation could see and use. That made expansion automatic: a place that
+ * prospered climbed a tier, which widened its reach, which took in another
+ * deposit, which made it prosper further, and the player was never asked
+ * anything. Reach is now bought deliberately (see `expansion.ts` and
+ * `territory.ts`) and this table only says how broadly a settlement sits on
+ * the country it already holds — a city fills more of its valley than a
+ * hamlet does.
+ *
+ * Much smaller numbers than the old reach, because it is answering a
+ * different question: this is a town's skirts, not its horizon. Still
+ * strictly increasing, which the old table embarrassingly wasn't — the first
+ * promotion a place earned used to *shrink* it by a third.
  */
-export const TIER_INFLUENCE: Record<Tier, number> = {
-  [Tier.Hamlet]: 900,
-  [Tier.Village]: 1250,
-  [Tier.Town]: 1650,
-  [Tier.City]: 2100,
-  [Tier.MajorCity]: 2600,
+export const TIER_FOOTPRINT: Record<Tier, number> = {
+  [Tier.Hamlet]: 430,
+  [Tier.Village]: 540,
+  [Tier.Town]: 660,
+  [Tier.City]: 790,
+  [Tier.MajorCity]: 920,
 };
 
 /** Drawn size on the map. */

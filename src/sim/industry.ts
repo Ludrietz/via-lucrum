@@ -1,6 +1,34 @@
-import type { Trader } from './economy';
+import { targetStock, type Trader } from './economy';
 import { ResourceType } from './types';
 import type { Villager } from './villager';
+
+/**
+ * How much of its own wanted stock a place has to be holding before an
+ * industry may start eating into the rest — a miller works the surplus
+ * grain, not the seed corn.
+ *
+ * This was 0.9, which reads as "just under a full larder" and is in fact
+ * *above the ceiling storage can reach*. Deliveries are driven by
+ * `shortage`, which stops calling for more the moment a shelf reaches
+ * `targetStock`, and `consume` draws it back down continuously — so a place
+ * doing perfectly well oscillates just under its target and never above it.
+ * At 0.9 an industry needed `0.9 × target + inputPerOutput` on the shelf,
+ * roughly a fifth more than the supply chain will ever deliver. Measured at
+ * day 111 on seed 1234: every industry at all five places read `hasInput =
+ * false`, including sawmills and masonries at places whose own shortage of
+ * the input was exactly 0.00. It was not a strict gate, it was an
+ * unreachable one, and an entire pillar of the design — raw goods becoming
+ * more valuable worked goods — had therefore never run once, in any realm,
+ * on any seed. Tools have never been made in this game; that is why every
+ * playtest ever printed reports a tools shortage of 1.00 forever.
+ *
+ * The lesson is the one this project keeps relearning: a threshold's meaning
+ * depends on the distribution it is compared against. Check what the
+ * quantity actually settles at before picking a line across it. Storage
+ * settles *at* target, so "genuine surplus" has to be a fraction of target
+ * comfortably below 1, not a hair under it.
+ */
+const INDUSTRY_INPUT_LINE = 0.6;
 
 /**
  * How many hands one industry can host, grown into by the trader's own
@@ -99,9 +127,31 @@ export class Industry {
     return (this.workerCapacity / this.recipe.workSeconds) * fraction ** DIMINISHING_EXPONENT;
   }
 
-  /** Whether there's enough raw material on hand right now to actually run. */
+  /**
+   * Whether there is raw material genuinely *spare* to work — not merely
+   * present.
+   *
+   * This used to read `>= inputPerOutput`, i.e. two units of wood, which
+   * meant a sawmill ran the village's timber down to nothing and then kept
+   * running on every delivery as it landed. The wood shortage that produced
+   * never closed, so `shortage(wood)` sat pinned at 1.0 civilisation-wide
+   * forever, which starved node investment (see `trade.ts` — investment is
+   * outbid whenever a trader is short), which froze every deposit at level
+   * one, which capped raw production at one worker per site, which meant the
+   * only place left for labour to go was... more industry. Thirty of
+   * forty-four people ended up milling nothing while eight connected
+   * deposits sat unstaffed and every raw shelf read zero.
+   *
+   * A miller works the surplus grain, not the seed corn: an industry only
+   * runs on input above what its own place wants to keep on hand. That one
+   * change turns the industry from a drain that competes with the raw
+   * economy into what it is supposed to be — the thing a place does once it
+   * genuinely has more than it needs.
+   */
   get hasInput(): boolean {
-    return this.owner.storage[this.recipe.input] >= this.recipe.inputPerOutput;
+    const { input, inputPerOutput } = this.recipe;
+    const spare = this.owner.storage[input] - targetStock(this.owner, input) * INDUSTRY_INPUT_LINE;
+    return spare >= inputPerOutput;
   }
 
   /** Converts input to output straight in the owner's own storage; returns units made this tick. */
@@ -112,8 +162,13 @@ export class Industry {
     this.productionTimer += dt;
     const perUnit = 1 / this.productionRate;
 
+    // The same line `hasInput` draws, applied per unit: an industry stops the
+    // moment it would be eating into what its own place needs, rather than
+    // running the shelf to zero the instant a delivery lands.
+    const floor = targetStock(this.owner, input) * INDUSTRY_INPUT_LINE;
+
     let produced = 0;
-    while (this.productionTimer >= perUnit && this.owner.storage[input] >= inputPerOutput) {
+    while (this.productionTimer >= perUnit && this.owner.storage[input] - floor >= inputPerOutput) {
       this.owner.storage[input] -= inputPerOutput;
       this.owner.storage[output] += 1;
       this.productionTimer -= perUnit;

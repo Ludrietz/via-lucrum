@@ -229,25 +229,45 @@ export class RoadNetwork {
     const startAnchor = this.anchorAt(rawPoints[0], sites);
     const endProbe = this.anchorAt(last, sites);
 
-    // Check both ends before touching the graph, so a road that connects
-    // nothing cannot leave a stray junction behind.
-    if (!startAnchor || !endProbe) return null;
-    if (startAnchor.kind === 'site' && endProbe.kind === 'site' && startAnchor.site === endProbe.site) {
+    // The *start* must join the network, so a road can never be an island.
+    // The far end need not: a road is allowed to simply stop somewhere, which
+    // is how anybody has ever found anything.
+    //
+    // Requiring both ends to land on something already known was quietly the
+    // most limiting rule in the game. The player's only verb is drawing a
+    // road; sites only become visible inside an influence ring; and rings
+    // only ever sat on places already reached. So the player could never
+    // reach *toward* anything — only between things the world had already
+    // handed them — and the moment the nearest undiscovered deposit sat
+    // outside one ring's reach, no sequence of legal moves existed that could
+    // ever find it. Measured over 150 in-game days, a civilisation of a
+    // hundred and thirty people was still working the same twelve deposits it
+    // found in its first fortnight, with dozens more a short way beyond.
+    //
+    // A track into open country is a real decision with a real cost: it earns
+    // nothing on its own, and if nothing comes of it the traffic never
+    // arrives and it grows over again (see `World.pruneAbandonedRoads`). But
+    // it is a move, and the game badly needed the player to have one.
+    if (!startAnchor) return null;
+    if (endProbe && startAnchor.kind === 'site' && endProbe.kind === 'site' && startAnchor.site === endProbe.site) {
       return null;
     }
+    // Length is checked here, before anything touches the graph. It used to
+    // be checked after both ends had been materialised, which was harmless
+    // only because both ends were guaranteed to already exist; now that a
+    // free end *creates* a node, bailing out later would strand it.
+    if (polylineLength(rawPoints) < MIN_ROAD_LENGTH) return null;
 
     const startNode = this.materialize(startAnchor);
 
     // Re-resolve the far end afterwards: materialising the start may have split
     // the very edge the end anchor pointed at.
     const endAnchor = this.anchorAt(last, sites) ?? endProbe;
-    const endNode = this.materialize(endAnchor);
+    const endNode = endAnchor ? this.materialize(endAnchor) : this.createNode(last, null);
 
     if (startNode === endNode) return null;
 
     const path = this.smoothPath(rawPoints, startNode.position, endNode.position);
-    if (polylineLength(path) < MIN_ROAD_LENGTH) return null;
-
     const created = this.layPath(path, startNode, endNode);
     this.version++;
     return created;

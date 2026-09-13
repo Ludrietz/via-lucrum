@@ -1,7 +1,7 @@
 import { emptyAmounts } from './economy';
 import type { Vec2 } from './geometry';
 import { Industry, IndustryType } from './industry';
-import { Tier, TIER_INFLUENCE, tierFor } from './tier';
+import { Tier, TIER_FOOTPRINT, tierFor } from './tier';
 
 /**
  * The first place. It is built the same way everything else on the map is:
@@ -45,7 +45,8 @@ export class Village {
     return tierFor(this.development, this.population);
   }
 
-  get influenceRadius(): number {
-    return TIER_INFLUENCE[this.tier];
+  /** How much ground this place sits on — its presence, not its reach. See `tier.ts`. */
+  get footprintRadius(): number {
+    return TIER_FOOTPRINT[this.tier];
   }
 }

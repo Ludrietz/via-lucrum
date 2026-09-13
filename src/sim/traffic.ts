@@ -267,3 +267,17 @@ export function dominantGood(tally: GoodsTally): {
 
   return { resource: total > 0 ? best : null, share: total > 0 ? bestAmount / total : 0, total };
 }
+
+/**
+ * The goods that come out of the ground, as opposed to out of an industry.
+ * The distinction matters wherever a reading has to be reachable early: a
+ * processed good sits at full shortage everywhere until somebody's industry
+ * actually runs, so a score that averages it in is a score that reads the
+ * same (bad) everywhere for the entire opening of the game.
+ */
+export const RAW_GOODS: readonly ResourceType[] = [
+  ResourceType.Food,
+  ResourceType.Wood,
+  ResourceType.Stone,
+  ResourceType.Iron,
+];

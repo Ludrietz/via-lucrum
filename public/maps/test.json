@@ -1,0 +1,68 @@
+{
+  "format": "via-lucrum-map/1",
+  "name": "Testvale",
+  "source": "Hand-drawn fixture. Not a real place - it exists to prove the simulation runs on authored ground, and to be small enough to read at a glance.",
+  "cellSize": 64,
+  "seed": 4242,
+  "startingPopulation": 5,
+  "village": { "name": "Oakridge", "x": 1312, "y": 992 },
+
+  "terrain": {
+    "encoding": "legend",
+    "legend": {
+      "^": { "elevation": 0.72, "moisture": 0.22, "temperature": 0.35 },
+      "h": { "elevation": 0.34, "moisture": 0.3, "temperature": 0.5 },
+      "f": { "elevation": 0.06, "moisture": 0.76, "temperature": 0.45 },
+      ".": { "elevation": 0.02, "moisture": 0.34, "temperature": 0.6 },
+      "~": { "elevation": -0.62, "moisture": 1.0, "temperature": 0.55 }
+    },
+    "rows": [
+      "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
+      "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
+      "hhh^^^^^^^hhhhhh^^^^^^^^hhhhh^^^^^^^hhhh",
+      "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+      "fhhhhhhhhhh...hhhhhhh....hhhhhhhhhhhhhhh",
+      "ffhhhhhh.......hhhh.........hhhhhhhhhhhh",
+      "fff.hhh...........................hhhhhh",
+      "ffff...............................hhhhh",
+      "fffff..........................~~~...hhh",
+      "ffffff.....................~~~~~~~~~..hh",
+      "fffffff...................~~~~~~~~~~~..h",
+      "ffffff...................~~~~~~~~~~~~~..",
+      "fffff.....................~~~~~~~~~~~~..",
+      "ffff.......................~~~~~~~~~~...",
+      "fff.........................~~~~~~~~....",
+      "ff...........................~~~~~~.....",
+      "fff...........................~~~.......",
+      "ffff..........fff.......................",
+      "fffff.........ffff......................",
+      "ffffff.........fff......................",
+      "fffffff.........f.............hhhh......",
+      "ffffff.......................hhhhhhh....",
+      "fffff.......................hhhhhhhhh...",
+      "ffff......................hhhhhhhhhhhh..",
+      "fff......................hhhhhhhhhhhhhh.",
+      "ff.....................hhhhhhhhhhhhhhhhh",
+      "f....................hhhhhhh^^^^hhhhhhhh",
+      "....................hhhhhhh^^^^^^hhhhhhh"
+    ]
+  },
+
+  "nodes": [
+    { "name": "Longacre", "resource": "food", "x": 1440, "y": 1248, "richness": 1.0 },
+    { "name": "Sunfield", "resource": "food", "x": 1632, "y": 864, "richness": 1.1 },
+    { "name": "Ashwood", "resource": "wood", "x": 992, "y": 1184, "richness": 1.0 },
+
+    { "name": "Millbrook", "resource": "food", "x": 2144, "y": 1120, "richness": 0.9 },
+    { "name": "Greenmere", "resource": "food", "x": 800, "y": 1632, "richness": 1.0 },
+    { "name": "Highwood", "resource": "wood", "x": 416, "y": 672, "richness": 1.3 },
+    { "name": "Frostpine", "resource": "wood", "x": 224, "y": 1440, "richness": 1.1 },
+
+    { "name": "Cragstone", "resource": "stone", "x": 2080, "y": 1440, "richness": 1.2 },
+    { "name": "Greystone", "resource": "stone", "x": 2208, "y": 288, "richness": 1.0 },
+    { "name": "Slateford", "resource": "stone", "x": 2464, "y": 544, "richness": 0.9 },
+
+    { "name": "Deepvein", "resource": "iron", "x": 1952, "y": 1696, "richness": 1.4 },
+    { "name": "Redcliff", "resource": "iron", "x": 608, "y": 224, "richness": 1.0 }
+  ]
+}

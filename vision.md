@@ -8,16 +8,34 @@ a bug fix.
 
 ## Core premise
 
-The player draws roads. Nothing else is placed by hand — no build menu, no
-unit orders, no direct control over any villager. Everything else — where
-people live, what they produce, what they carry, whether a hut by the road
-becomes a market town — is the *consequence* of the road network the player
-drew, the terrain it crosses, and the economy that grows on top of it.
+The player draws roads, and chooses where the realm grows. Nothing else is
+placed by hand — no build menu, no unit orders, no direct control over any
+villager. Everything else — where people live, what they produce, what they
+carry, whether a hut by the road becomes a market town — is the *consequence*
+of the road network the player drew, the ground it was drawn across, and the
+economy that grows on top of it.
 
-The player's entire vocabulary is: draw a road, erase a road. Every feature
-this game ever gets has to either sit upstream of that verb (something that
-changes what a road is worth drawing) or downstream of it (something that
-makes the consequences of a drawn network legible and interesting to watch).
+The player's entire vocabulary is two verbs:
+
+- **Draw a road** (and erase one). Free, unrestricted infrastructure. Roads
+  answer "can we connect these places?" and nothing else — they grant no
+  ground and reveal no country.
+- **Claim a frontier site.** Paid for out of Expansion Capacity the
+  civilisation has earned. This answers "are we willing to take this place
+  in?" — and only that. What comes of it is the simulation's business.
+
+This used to be one verb. The second was added deliberately, and only because
+the alternative was worse: with roads alone, the only thing that could decide
+where a civilisation grew was a formula, and any formula good enough to grow
+the realm sensibly also grew it *without being asked*. Expansion was
+automatic and the player was a spectator to their own strategy. See
+"Expansion: how the realm grows" below.
+
+The bar for a third verb is exactly as high as the bar for the second was.
+Every other feature has to sit upstream of these two (something that changes
+what a road is worth drawing, or what a place is worth taking) or downstream
+of them (something that makes the consequences legible and interesting to
+watch).
 
 ## What "done" looks like
 
@@ -56,9 +74,10 @@ player's roads and the world's own towns reach further out.
 
 ## Design pillars
 
-1. **The player only draws roads.** If a feature requires a new player verb,
-   look harder for a way to make it an emergent consequence of the road
-   network first.
+1. **Two verbs, and no more.** Draw a road; claim a frontier site. If a
+   feature seems to need a third, look much harder for a way to make it an
+   emergent consequence of those two first — that search is what produced
+   every system in this game worth keeping.
 2. **Nothing is placed by hand.** Settlements, industries, trade
    specializations — all of it grows out of usage, or it isn't in the spirit
    of this game.
@@ -74,6 +93,157 @@ player's roads and the world's own towns reach further out.
    correct-on-paper system that produces a screen full of numbers nobody can
    read from the state of the world is a failure of this game specifically,
    even if the math is right.
+
+## Expansion: how the realm grows
+
+The player's second decision, alongside drawing roads — and the one that
+decides *where* the civilisation invests its future.
+
+**Expansion Capacity** is earned continuously by the civilisation doing well
+(population, wealth income, and how well-supplied its places actually are —
+see `expansion.ts`). It is deliberately not money: wealth already measures
+trade going well, and if expansion cost coin then the best economic play and
+the best territorial play would be the same play, which is no choice at all.
+
+The **frontier** offers a handful of sites just beyond the border, priced.
+Nothing else out there is visible. Offers are chosen for variety, not
+proximity — at most one per resource, spread apart — so each slot is a
+different kind of decision ("timber now, or hold out for the iron") rather
+than four versions of the same one.
+
+**Claiming** spends the capacity and takes the site, *and the ground between
+it and the realm*, into the territory. It does not connect it, staff it,
+settle it, or deliver anything from it: a claimed deposit with no road to it
+produces exactly nothing. The player buys the right to develop somewhere; the
+simulation decides what comes of it.
+
+**Territory** (`territory.ts`) is the set of those deliberate acts — the
+founding seat, every claim, every settlement that has grown inside the border
+— rendered as one merged scalar field traced with marching squares. It moves
+only when something is incorporated.
+
+The loop:
+
+```
+civilisation prospers → capacity accrues → frontier offers appear
+→ player chooses → capacity spent → border grows to meet the site
+→ roads, workers, trade, maybe a settlement → civilisation prospers
+```
+
+Three rules hold this together and should not be quietly relaxed:
+
+1. **Roads are free and grant nothing.** They connect, and they *look* —
+   the corridor a road runs through is surveyed, so a track drawn toward
+   nothing in particular still finds what it passes. What they never do is
+   create territory or confer any right: a road may not anchor on an
+   unclaimed site, and nothing it finds may be worked until it has been paid
+   for. This is what the old system got wrong twice over.
+
+   **Water is the one thing they cannot simply ignore.** A road may *bridge*
+   a river — any crossing a bridge could really make (`MAX_BRIDGE_SPAN`) — and
+   may not run along water for longer than that. Crossing is dear
+   (`BRIDGE_COST`, steeper than mountains), so a network prefers to go round
+   and crosses where it must, which is exactly why real towns grew at the
+   fords. This is still "free and unrestricted": nothing is spent and nothing
+   is unlocked. It is the ground arguing, not the rules.
+
+   Water used to be flatly impassable, and the rule was fine for as long as
+   water meant a procedural lake — something large, round, and obviously to
+   be walked around. It broke the moment a map of a real river valley turned
+   up, where "no bridges" means a creek a person could wade cuts a town off
+   from its own fields. A river should be an argument about where a road
+   goes, and it could only ever be a wall.
+
+   This rule used to read "they do not reveal", which sat in flat
+   contradiction with the failure-mode entry below celebrating the fix that
+   made roads reveal their corridor — the territory redesign added the
+   sentence at the top and left the entry underneath, and the code then
+   quietly followed the stricter reading and dropped corridor reveal
+   altogether. Resolved deliberately in favour of revealing, because the two
+   halves are not the same grant: knowing where the iron is buys nothing, and
+   a game in which the player cannot look before committing has no decision
+   in it. See "Knowledge is not ownership" below.
+2. **Claiming is not exploiting.** Incorporation is permission, not
+   production.
+3. **The world exists first.** The frontier *selects* from what generation
+   already placed; nothing is ever spawned because the player needs it.
+
+### Knowledge is not ownership
+
+Four different questions were once answered by one radius, and the territory
+redesign correctly separated three of them — roads for connectivity, capacity
+for commitment, territory for ownership. It missed the fourth. "What do we
+know is out there?" was left to the frontier offer list, which meant the
+player could see exactly the two-to-four sites currently priced and nothing
+else, and a site that stopped being offered went dark again.
+
+That is not a smaller version of the right thing; it is a different thing.
+An offer list is the realm's current *attention*, and attention is properly
+narrow and properly fickle. Knowledge has to be broad and monotone, because
+its entire job is to let the player hold an opinion about where to grow — and
+"which way should the realm reach?" is the one decision this whole design
+exists to pose. Asked with three of eight compass directions dark, it is not
+a decision, it is a coin flip.
+
+So there is now a fourth thing (`survey.ts`), and it obeys its own rules:
+
+- **It is monotone.** Somewhere surveyed stays surveyed. A scouting track
+  that later grows over leaves its discoveries behind, which is precisely why
+  such a track is worth drawing.
+- **It grants nothing**, which is what makes it safe to be generous with, and
+  is the exact distinction the old influence system failed to draw. A
+  surveyed site cannot be worked, routed to, or built on, and still costs
+  full price.
+- **It comes from presence.** Seats survey the country around them (further
+  as they grow), claims survey their own valley, roads survey their corridor.
+
+Seeing further as you prosper is the very feedback loop influence was killed
+for, and it is harmless here for one reason only: seeing further no longer
+*does* anything by itself. It widens the menu, not the realm.
+
+The frontier then offers from surveyed country and nowhere else, which is
+what makes scouting strategically real — run a road out and the frontier has
+something new to say, in that direction.
+
+### What the border is for
+
+A border that only prices claims and bounds chunk generation is a decoration:
+before this, nothing the player could see or feel ever consulted it. It now
+has two jobs, both chosen because they sit on things the player already
+watches rather than adding a system.
+
+- **People settle on the realm's own ground, and nowhere else.** This is what
+  makes a claim mean "we have opened a province the realm can grow into", and
+  it closes the loop the two verbs are meant to form: prosper, earn capacity,
+  take in country, *have somewhere for a town to appear*, prosper. Before, the
+  middle link was missing entirely — towns appeared wherever traffic was busy,
+  whether or not the player had expanded at all.
+- **The realm keeps up its roads; the wilderness takes them back.** A stretch
+  outside the border has to be several times busier to avoid growing over.
+  This is the second half of the scouting loop: a track into unclaimed country
+  is worth drawing and does its job, but keeping it means either giving it
+  real traffic or claiming the ground it crosses. It also makes the border
+  legible in the one thing the player actually draws.
+
+### What this replaced, and why
+
+The old model was *influence*: every place projected a radius read off its
+tier, and any resource site falling inside it became the civilisation's to
+use, free, forever. That made expansion automatic — a village that prospered
+reached further, which took in a deposit, which made it prosper further — and
+the player was never asked anything. Worse, it had been extended so that
+roads projected influence too, which turned the one free verb in the game
+into a scouting exploit: draw a cheap road at nothing in particular, collect
+territory.
+
+The lesson worth keeping: when a system is being gamed, look at whether two
+different ideas have been collapsed into one number. "How far can we see",
+"what do we own", "what can we reach" and "where is worth going" were all
+being answered by a single radius. Separating them — roads for connectivity,
+capacity for commitment, territory for ownership, frontier for attention —
+removed the exploit without any of the anti-exploit special cases that were
+starting to accumulate.
+
 
 ## What has actually shipped (as of this writing)
 
@@ -164,6 +334,31 @@ development, been diagnosed, and been fixed (or is being actively managed).
 Keep this list current; it's the sharpest tool for catching a regression
 before a player does.
 
+- **A world with no stated scale, and a walking speed a fifth of what it
+  should have been.** Every distance in the game was tuned by feel against
+  every other distance, which is fine until something outside the game has an
+  opinion. An imported map of the country around Kutná Hora had one: it knew
+  exactly how far the nearest wood was. Written down, the game's own numbers
+  turned out to agree almost perfectly on **four metres to the world unit** —
+  a hamlet's footprint is 1.7km, a claim holds 1.5km, deposits sit 5km apart,
+  the procedural world is 160km across. Every one of those is a figure a
+  medieval geographer would recognise, and not one was chosen with metres in
+  mind.
+
+  `WALK_SPEED` was the single number that disagreed, by a factor of four and
+  a half. At 82 units an hour a villager covered eight kilometres in a day,
+  so a round trip to the parish wood cost most of a day and the economy was
+  built on top of that: nearly half the workforce permanently on the road,
+  not because hauling three kilometres is genuinely that dear, but because
+  everyone was walking at the pace of a slow tortoise. Correcting it to a
+  day's journey (35km, `scale.ts`) roughly doubled every civilisation the
+  harness has ever measured — seed 1234 went from 83 residents to 175, and
+  the Kuttenberg import from 16 to 125.
+
+  The lesson is not about speed. It is that a simulation meant to be checked
+  against reality has to say what its units mean, or a number can sit four
+  and a half times wrong for the whole life of a project and read as a
+  balance problem every time it is looked at.
 - **0-population settlements/cities.** Tier or existence decoupled from
   actual residents. Caught a second, subtler instance of this: industry
   worker *capacity* was keyed to a trader's tier, but tier is itself driven
@@ -360,10 +555,553 @@ before a player does.
   gate only when the two options are truly mutually exclusive (a resource
   site and a settlement cannot occupy the same ground).
 
+- **A world that can be born unplayable.** Nothing ever checked that the
+  founding village stood on land a road could leave. Across 200 seeds, 19
+  put Oakridge in open water — every road out failed `crossesImpassable` on
+  its first sample, and the game ended around day 10 having never accepted a
+  single input — and 35 put a *starting* resource in water, which is the
+  same dead end wearing a friendlier face (`forcePlacement` explicitly
+  exempted Food from its water check, presumably meaning fishing). Fixed in
+  three places, all in `worldgen.ts`: `habitableSite` sites the village on
+  the nearest ground with enough connected dry land around it to work from;
+  the start guarantee now refuses any site that isn't *walkable from the
+  village* (`walkableFrom`), so a farm across a bay no longer counts toward
+  the quota and stops the search; and a deposit that rolls onto water is
+  beached on the adjacent shore (`ashore`) rather than dropped, which keeps
+  the fishing-village flavour and makes it something a road can reach. The
+  general lesson: a guarantee that isn't checked against the thing that
+  actually blocks play — here, "can a road get there" — is not a guarantee.
+- **Two tables for the same quantity, one of them switched off.** Demand,
+  target stock, "how many people can this feed" and actual consumption were
+  read from two separate per-capita tables that disagreed by roughly a
+  factor of two — and because the larger one drained faster than production
+  could keep up, raw-good consumption was simply disabled. That produced the
+  single worst economic bug found in this project: **raw food was never
+  taken off a shelf by anything**, so the moment a larder filled to its
+  target, `shortage(food)` read zero *permanently*. Food then never scored
+  as worth shipping, the trade system quietly stopped carrying it in favour
+  of iron and stone, and population — which reads the delivery *rate*, not
+  the shelf — starved beside a full granary nothing would ever empty. Fixed
+  by deriving consumption from `DEMAND_PER_CAPITA_PER_MIN` and applying it
+  to every good: one number for what a person gets through, so the shelf and
+  the flow cannot tell different stories. Watch for this shape generally —
+  two constants that mean the same thing will drift, and the one that gets
+  turned off takes a feedback loop with it.
+- **A subsystem whose own damage is what keeps feeding it.** An industry's
+  hiring priority was the civilisation-wide shortage of its *output*. But a
+  processed good sits at shortage 1.0 everywhere until an industry actually
+  runs, so "how short are we of planks" read *maximal* precisely when the
+  sawmill had no wood — i.e. exactly when nobody should be sent to one. The
+  mills then ate whatever timber did arrive (`hasInput` needed only two
+  units, so they ran the shelf to zero on every delivery), which kept wood
+  pinned at full shortage, which starved node investment, which froze every
+  deposit at level one and capped raw production at one worker per site,
+  which left industry as the only place labour could go. Observed at day
+  150: thirty of forty-four residents milling nothing, eight connected
+  deposits unstaffed, every raw shelf reading zero. Fixed by pricing an
+  opening on the *supply chain* rather than on its own output alone
+  (`systems.ts`'s `sitePriority` discounts an industry by the scarcity of
+  its input, so a mill ranks below the forest that would fix it) and by
+  making an industry work only genuinely spare material (`industry.ts`'s
+  `INDUSTRY_INPUT_LINE` — a miller works the surplus grain, not the seed
+  corn).
+- **An arbitrary reserve that hiring drives straight to.** The share of the
+  workforce held back for carrying was a flat 15%, and hiring stopped
+  exactly at it — so the civilisation sat pinned to that floor forever,
+  running seven carriers at forty-four residents whether the deposits were
+  next door or half a map away. Nothing about "one in seven people" follows
+  from anything in the world. Replaced with `haulageDemand`: Little's law
+  over the network the player actually drew — goods appear at a rate, each
+  round trip takes as long as the road makes it take, one person is on one
+  trip at a time. This is also the change that makes road-building matter in
+  the most direct possible sense: a shorter, better-placed road is fewer
+  people spent walking, and more left to produce. Built deliberately from
+  production *rate* and route *length* (geography and staffing) rather than
+  from the pile of uncollected goods, which is a consequence of the carrier
+  count and would oscillate against it — the same trap
+  `MigrationSystem.workDraw` had to be pulled out of.
+- **A global serial queue as a growth ceiling.** `TransportSystem` dispatched
+  at most one load every 0.7s no matter how large the civilisation got,
+  capping *all* trade everywhere at a few hundred units a minute. Two
+  hundred residents comfortably outgrew it, at which point eighty of them
+  stood idle while the shelves emptied around them. The interval exists so a
+  village's carriers don't set off in one clump; it now scales with how many
+  people are actually waiting for work, because a busier place genuinely does
+  send more of them.
+- **A three-zone step function with its cliff under the common case.**
+  Development moved at one of three flat rates, with the worst decline more
+  than four times the best growth, and the boundary between "slow climb" and
+  "fastest decline" sat exactly where a perfectly-fed, wealth-less place
+  landed (comfort 0.5 against a `STRUGGLING` threshold of 0.5). The founding
+  village — structurally guaranteed to earn no wealth, since it is where
+  everything is carried *to* rather than sold *from* — therefore lived at
+  the development floor with sixty-seven well-fed residents, labelled a
+  hamlet. Fixed twice over: comfort now reads demand-weighted `provision`
+  across the *raw* goods rather than food alone (the worked goods are left
+  out on purpose — they saturate at full shortage early and would make every
+  place read identically badly, the same saturation trap that made
+  migration's opportunity score inert), and `developmentRate` is a straight
+  line through a break-even point instead of three zones. A readout should
+  move smoothly with the thing it reads.
+- **Population gated on grain alone.** `sustainablePopulation` counted food
+  and nothing else. Farmland is the commonest ground on any map, so food
+  sites outnumbered woodland better than two to one, and population grew on
+  grain until it was three times what the forests could supply: wood sat at
+  maximum shortage permanently, industries had nothing to work, and eighty
+  of two hundred and thirty residents had nothing to do. It is now the lower
+  of what the grain feeds and what the timber keeps warm — the same
+  "whichever ladder is behind" idiom `nodeLevel` and `tier` already use. Two
+  follow-on traps came with it. It has to be computed as the minimum of the
+  civilisation-wide *totals*, not the sum of each place's own minimum:
+  summing per-place minimums demands every settlement be independently
+  self-sufficient in both necessities, which is precisely what a trade
+  network exists to make unnecessary, and it reported a starving
+  civilisation sitting on a surplus of everything (population 233 → 27). And
+  it exposed that `RESOURCE_BALANCE` weighted stone — a fifth of food's
+  per-capita draw — at nearly twice timber, which is three fifths of it.
+  Generation has to be balanced against what the economy *eats*, not only
+  against what gates an upgrade.
+- **Settlements founded faster than there were people to fill them.**
+  Nothing checked that the civilisation could populate a new place. Once the
+  network got busy enough for several patches to clear the potential
+  threshold at once, settlements appeared at whatever rate traffic allowed —
+  fourteen of them for a civilisation of thirty, four sitting at population
+  zero and the development floor forever, wearing a name and a tier label.
+  This is the "0-population settlement" failure at its source, and no amount
+  of tuning migration fixes it, because the place should never have existed
+  yet. `settlementSystem.ts` now requires roughly a Village's worth of
+  residents per existing place before another may found: places are founded
+  by people.
+- **An expensive global decision re-asked every tick.** Both
+  `findBestShipment` and `MigrationSystem.relocate` set their cooldown only
+  on *success*, so in the ordinary case — nothing worth moving, nobody worth
+  relocating — they re-ran their full scan on the very next tick, and every
+  tick after. Migration's scan is a route lookup per idle villager per
+  destination, so its cost grows with the square of how well the
+  civilisation is doing; at a hundred residents it was the most expensive
+  thing in the game. Both now charge the cooldown up front. A decision
+  nobody could act on more often than every N seconds should not be computed
+  more often than that either.
+- **A shrink that could only ever take dependents, and then couldn't take
+  anyone.** Removal preferred "a free dependent, else anyone free" — but a
+  dependent is *always* free, so a population oscillating around its food
+  supply ground the dependent share to literally zero, silently inflating
+  the labour force by half against the 70/30 split it is meant to hold.
+  Worse, once every working adult held a post there was nobody free at all
+  and nothing could leave: the civilisation froze at forty-four people
+  living off food for thirty, indefinitely, with the readout plainly saying
+  so. Removal now prefers whichever side of the split is over-represented
+  (both candidates are people with no job either way), and as a last resort
+  closes an *industry* — discretionary work by definition — rather than
+  letting the shortfall stand forever. Taking someone off a resource node
+  remains forbidden; that was tried before and is a real death spiral.
+- **The player could not reach toward anything.** A design gap rather than a
+  bug, and it quietly capped the whole game. A road had to start *and end*
+  on something already known; sites only became visible inside an influence
+  ring; and rings only sat on places already reached. So the only ground a
+  player could ever reveal was a disc around somewhere they had already got
+  to — and once the nearest undiscovered deposit sat beyond one such disc,
+  no sequence of legal moves could ever find it. Measured at day 150: a
+  hundred and thirty people still working the twelve deposits found in their
+  first fortnight, with forty-five more generated and permanently invisible
+  a short way beyond. Fixed by letting a road end nowhere in particular
+  (`RoadNetwork.addRoad`, `RoadDrawing.valid`) and by making the road itself
+  reveal the corridor it crosses (`World.roadCentres`). Neither adds a verb
+  — the vocabulary is still "draw a road, erase a road" — but together they
+  make "roads open the world" literally true rather than merely stated, and
+  they make a long trunk road pay for itself twice: in what it connects, and
+  in everything it finds along the way. A scouting track that leads nowhere
+  still grows over, which is exactly right.
+- **A cost model that only sees "how big is the realm", never "what shape is
+  it".** `expansionCost`'s only anti-runaway term was a per-holding tax
+  (`COST_PER_HOLDING`) applied to the realm's total holding count, and its
+  only distance term was `distanceOutside` — distance to the nearest
+  *holding*, of any kind. Both are blind to shape: a single-file line of
+  claims, each one just beyond the last, prices identically to a compact
+  blob of the same count, because "nearest holding" for a chain's tip is
+  always the previous link, however far that link sits from anywhere anyone
+  lives. Reported directly: a long chain of claimed sites with only one
+  settlement, that settlement close to the founding village, and every
+  worker on the far end of the chain routing all the way back to the
+  village to be re-homed — the near settlement never came within reach.
+  Fixed by charging a `remotenessFactor` in `expansionCost`, keyed off the
+  *gap* between distance-to-nearest-holding and
+  `Territory.distanceFromNearestSeat` (nearest *seat* — a village or a
+  settlement, not a bare claim). That gap is zero for any claim made
+  directly off a seat — which covers the entire opening game, so ordinary
+  play isn't taxed twice for the same distance — and opens, and keeps
+  widening, only once a chain's tip is anchored on ground that is itself far
+  from any seat. A compact cluster growing outward from a settlement never
+  opens the gap, however large it gets, because its edge always stays a
+  claim or two from that settlement. Verified with a purpose-built
+  adversarial scenario (`tools/snaketest.ts`) that always claims whichever
+  affordable offer continues the established heading and drags one
+  unoptimised road segment to it: before the fix, a hundred-and-fifty-day
+  chain reached population 93 with every settlement bunched within 2000
+  units of the village while claimed sites ran out to 8500; after, the same
+  scenario spreads settlements out to 4800+ units, and a worker at the tip
+  commutes a few hundred to low-thousands of units to the *nearest* one
+  instead of four to five thousand back to the capital.
+- **A gate that quietly asked for triple.** The settlement-founding
+  population gate (added to fix the 0-population-settlements entry above)
+  read `ctx.population < (places + 1) * POPULATION_PER_PLACE`, where
+  `places` already equals "settlements that would exist after this one" —
+  so the `+ 1` counted the settlement being founded a second time. At the
+  constant in place (12) that demanded population 24 to found the *first*
+  settlement, above even the Town population bar (18), and every settlement
+  after it got stricter twice as fast as the comment above the constant
+  actually claims. A civilisation whose economy was already strained by a
+  long haul (see the entry above) never generated enough surplus population
+  to clear the inflated gate, and sat at one settlement for the entire run.
+  Fixed by removing the double-count (`places * POPULATION_PER_PLACE`) and
+  recalibrating the constant to 9, matching the comment's own stated intent
+  of tracking the Village tier's population bar (8). Whenever a gate's
+  comment states an intended value, that value is worth checking the actual
+  arithmetic against — a formula can drift from its own documentation
+  without a single line of it looking wrong in isolation.
+- **A founding hand-off with nothing to hand off.** A new settlement gets
+  its first residents by re-homing whichever villager is already working
+  the nearest site to it (`World.foundSettlement`) — necessary, since a node
+  only re-homes its worker once, at hire time. The founding gate checked
+  `resources` (is there *claimed ground* worth working nearby) but not
+  whether anyone was actually *working* it yet: a patch could clear every
+  threshold and found while its nearest resource site sat claimed and
+  connected but not yet staffed, and the hand-off then had nobody to hand
+  off. Tightened by requiring a genuinely staffed site
+  (`workers.length > 0`) in the same range `resources` already checks
+  (`settlementSystem.ts`'s `hasNearbyWorkedSite`) — the gate now checks the
+  thing the hand-off it exists to support actually needs. Left open: a
+  worked site *can* still exist nearby and still fail to populate the new
+  settlement, if that site's worker's home was already the nearest
+  *existing* seat rather than the new one — re-homing only ever happens
+  once, at founding, and never retroactively reconsiders. See "Known and
+  still open".
+
+- **A threshold above the ceiling the quantity can actually reach.** The
+  industry input line asked for `0.9 × targetStock + inputPerOutput` on the
+  shelf before a mill could run. But deliveries are driven by `shortage`,
+  which stops calling for more the instant a shelf reaches `targetStock`, and
+  `consume` draws it back down continuously — so a place doing perfectly well
+  oscillates *just under* its target and never above it. The gate was not
+  strict, it was unreachable. Measured at day 111 on seed 1234: every industry
+  at all five places read `hasInput = false`, including sawmills and masonries
+  at places whose own shortage of the input was exactly 0.00. An entire pillar
+  of the design — raw goods becoming worked goods — had therefore never run
+  once, on any seed, in the project's history; not one tool had ever been
+  forged, which is why every playtest ever printed reported a tools shortage
+  of 1.00 forever. Fixed at 0.6 (`industry.ts`). The lesson is one this
+  project keeps relearning in new clothes: a threshold's meaning depends
+  entirely on the distribution it is compared against, so check what the
+  quantity actually settles at before drawing a line across it.
+- **A gate that gets harder to pass the better the game goes.** Industry
+  staffing required a *per-place* population of 15, in a game whose entire
+  design spreads population across many small places. At day 111 on seed 1234
+  a healthy civilisation of thirty-four across five places had a mean
+  population under seven and *zero* places clearing the bar — and the loop ran
+  backwards, since every new settlement a prospering realm founded divided the
+  population further. Succeeding made industry strictly less likely, forever.
+  The thing the floor was protecting ("don't pull the last farmer into the
+  mill") was already handled better by `openingScore`, which ranks every raw
+  opening against every industry opening by live civilisation-wide need.
+  Dropped to 6 — "is this a village at all", which is the only question the
+  sort cannot answer for itself.
+- **Distance doing two jobs at once.** The frontier scored offers by
+  `1 - beyond / reach` against a hard `reach` ceiling, so distance both ranked
+  the offers and decided which existed. The second job quietly guaranteed a
+  monoculture: generation deliberately puts stone and iron far out (1500-3000)
+  and food and wood near, so any ceiling near the deposit scale offers nothing
+  but the common goods however badly the realm needs the rare ones. Measured
+  at day 150 on seed 1234: sixty-two deposits visible, forty-one of them
+  stone, exactly one stone ever offered or claimed, and a flat 1.00 stone
+  shortage from day a hundred on — which freezes every node at level one,
+  stone being what farms and forests upgrade with. Nearness is now a
+  preference and the survey is the boundary; `expansionCost` was already
+  charging for distance, so a far offer is simply a dear one. This also
+  deleted the four-step reach-widening ladder outright: it only ever existed
+  as a proxy for "how far has anyone looked", and there is now a real answer
+  to that question.
+- **A threshold calibrated at exactly the spacing of the thing it reveals.**
+  The survey horizon opened at 1400 and deposit clusters sit roughly 1300
+  apart, which makes "can this realm see anything at all?" a coin flip on the
+  seed rather than a property of the design. Two of six seeds opened with
+  their nearest unclaimed deposit at 1667 and 1849 units, saw nothing beyond
+  their founding sites, and — since the frontier only offers surveyed country
+  — could never claim, never move the border, and never widen the horizon. A
+  dead game from turn one, on a third of seeds. Horizons now open at nearly
+  two rings of deposits. Same family as the forest-threshold bug above: know
+  the distribution before you draw a line across it.
+- **A gate that checked something adjacent to what its beneficiary needed.**
+  `hasNearbyWorkedSite` asked "is somebody working nearby", but the founding
+  hand-off it exists to serve re-homes a villager only if the new settlement
+  becomes *the nearest trader to their workplace*. Since `crowding`'s minimum
+  spacing (360) is smaller than `resourceRange` (520), there is always a band
+  where a site is "nearby" for a new settlement and nearer still to an older
+  one — so a settlement could clear every gate, found, and catch nobody.
+  Re-homing runs once and is never reconsidered, so such a place sits at zero
+  forever. Observed twice in a single hundred-and-fifty-day run, both still at
+  population zero and at the development floor at the end of it. The gate now
+  asks the hand-off's own question, which closes the gap exactly and adds no
+  fourth spacing constant to keep in sync with the other three. (This
+  discharges the second "Known and still open" item below.)
+- **A harness that could not see half of what it was testing.** The stand-in
+  player only ever drew roads to *claimed, unconnected* sites, so every
+  stretch of road in every playtest ran between two things the realm already
+  owned. Both the corridor survey and territory-dependent road abandonment
+  therefore measured as perfect no-ops across every seed — byte-identical
+  output — not because they did nothing but because nothing in the harness
+  ever put a road where they applied. `Surveyor.scout` now runs tracks out
+  toward the compass sector the realm knows least about, which is what a
+  player does constantly. On the seeds measured this moved visible deposits
+  from 26 to 47 and offer coverage from three compass sectors to eight. When a
+  change reads as an exact no-op, suspect the harness before believing the
+  result.
+- **A landscape that kept confessing it was a grid.** The terrain is stored
+  on cells because pathfinding needs it to be, but elevation and moisture are
+  samples of continuous fields — the grid is how the world is *kept*, not what
+  it is. The old renderer drew one rectangle per cell, so the sampling lattice
+  was the most legible thing on screen: you could read the cell size straight
+  off the picture. Interpolating the readings back into a surface is the
+  obvious repair, and it took three goes, because the grid kept coming back
+  through a different door each time.
+
+  Linear interpolation left creases along the cell diagonals. Easing the
+  weights with a smoothstep fixed those and quietly did something worse:
+  smoothstep has zero derivative at both ends, so the reconstructed surface is
+  *flat along every cell line*. Nothing looked wrong until it was
+  differentiated — and hillshading is exactly a differentiation — at which
+  point the whole countryside came out combed into a faint plaid at precisely
+  cell spacing. The lattice had moved out of the values and into their slope.
+  Only a filter whose derivative keeps varying across sample boundaries
+  (Catmull-Rom, `field.ts`) actually removed it. Meanwhile the coastline was
+  quantised to whatever the texel grid happened to be, because a hard test on
+  `elevation < WATER_LEVEL` always is; that one needed the waterline measured
+  as a distance in world units and blended across a texel, after which extra
+  resolution stopped being needed at all.
+
+  Three lessons, all the same shape. An artefact removed from a quantity can
+  reappear in its derivative, so check the thing you are actually going to
+  display. Resolution postpones a quantisation artefact and never fixes one.
+  And the grid in the data was never the problem — every one of these was the
+  *renderer* choosing to treat samples as tiles.
+- **Trees that grew where the classifier said there was no forest.** Scatter
+  gated on `forestDensity`, which reads like the right field and is not: it
+  measures how wooded ground *could* be, and a plains cell carries 0.5 of it
+  as happily as a forest cell does. The result was woodland over open country
+  and, at the thresholds first chosen, over most of the map. The field was
+  never wrong; using it as a yes/no when the classifier's own forest/plains
+  decision was the yes/no was. That decision is a threshold on a continuous
+  score, so exporting the score (`woodlandScore`) let the canopy ask the same
+  question the classifier asks, at a tree's exact position rather than at its
+  cell's centre — agreeing with the simulation *and* giving a treeline that
+  wanders sub-cell. Where a renderer needs a finer grain than a cell, share
+  the quantity the classifier thresholds; do not proxy it with a neighbour.
+- **A river stored in the wrong shape, and a dilation to paper over it.** A
+  watercourse is three orders of magnitude longer than it is wide. Stored as
+  "which cells are wet", the Kuttenberg map's rivers came out at a
+  hundred-and-twenty-eight-metre floor against a drawn width of five — and had
+  to, because a one-cell river running diagonally is a chain of cells touching
+  only at their corners, which nothing in this game can be stopped by, so
+  `thickenWater()` dilated every stream to two cells to close the gap. That
+  floor was structural, not a resolution problem: the dilation is needed
+  because of how cells connect, so refining the grid would have cost
+  twenty-eight times the cells and still left a floor with a five-metre brook
+  out of reach. Rivers are lines now (`river.ts`), crossing is a segment
+  intersection, and the diagonal bug disappeared rather than being widened
+  around. Lakes stayed in the raster, because a lake genuinely is areal. When
+  a fix has to make something *bigger than life* to stay consistent, the
+  representation is wrong, not the parameter.
+- **Three plausible explanations for one tracing bug, and only the picture
+  settled it.** Tracing those rivers out of the drawing produced six thousand
+  fragments averaging under two pixels. Diagnosis one: the colour classifier
+  returns a dotted line, so morphological closing was added. Diagnosis two:
+  thinning leaves whiskers that read as junctions, so spur pruning was added.
+  Both were reasonable, both helped a little, and neither was the cause — the
+  longest traced watercourse stayed at *exactly* 514 metres across six very
+  different settings. An invariant that survives changes to its inputs is a
+  cap in the code, not a fact about the data. Dumping the mask as a PNG showed
+  a clean, continuous dendritic network and ended the guessing in one look:
+  the fault was that Zhang-Suen leaves staircase pixels with three
+  eight-connected neighbours, so the walk saw a junction every few pixels and
+  cut there. Following the straightest continuation instead took the network
+  from 8.9km to 25km. Look at the artefact before theorising about it.
+- **The same category error, run backwards, on ponds.** Having moved rivers
+  out of the cell raster because a line is not an area, the obvious next step
+  looked like moving ponds out too — they are small enough that the ground
+  bake draws them as smudges, and having half the water crisp geometry and
+  half of it blurred raster is a seam wherever the two meet. So ponds were
+  given the river treatment: a centreline and a width. A pond's centreline is
+  two points, and a two-point ribbon is a rectangle, so every pond on the map
+  drew as a hard blue box — worse than the smudge it replaced. A ribbon
+  describes a line. A pond is an area. Forcing one into the other is exactly
+  the mistake that put rivers in the raster, with the arguments reversed, and
+  "we just moved the other thing, move this too" is what made it feel
+  reasonable. Areal water stays in the raster until it has an areal
+  representation of its own.
+- **Water claimed by one renderer and drawn by neither.** Splitting water
+  between a raster and a geometry pass needs one invariant — every drop is
+  drawn by exactly one of them — and the first version broke it in the
+  quietest possible way. The tracer marked a component's pixels as "mine, do
+  not rasterise" *before* checking whether its traced paths survived
+  filtering, so any water that was claimed and then filtered out vanished from
+  the map entirely. It presented as ponds disappearing, which read like a
+  rendering bug and was really a bookkeeping one. When two systems divide a
+  responsibility, the handover has to be the last step, not the first.
+- **Translucency applied per shape instead of per union.** The soft rim that
+  made rivers stop looking stuck on was drawn as two semi-transparent bands
+  around each watercourse — and wherever two watercourses overlapped, which is
+  every confluence on the map, the bands composited twice and left a dark
+  bruise. The rule is that alpha belongs to the *union* of a thing, not to each
+  piece of it, and there is no cheap way to union these polygons. So nothing in
+  the water layer is translucent any more: each band is opaque and is given a
+  colour worked out from the ground it will sit on (`bankTone`), which paints
+  over itself without changing shade. A confluence, a crossing and a river
+  running into a pond now all come out exactly the tone of a single stretch.
+  Whenever soft edges are built by stacking transparencies, ask what happens
+  where two of them meet.
+- **Water drawn by two renderers with two palettes.** Rivers left the raster
+  and got their own layer, which promptly chose its own blue and its own dark
+  outline — close enough to the bake's water to look deliberate, far enough to
+  look wrong, so a stream changed substance where it reached a pond. Two
+  renderers is a fact about resolution and cannot be helped: a cell raster can
+  hold a lake and cannot hold a five-metre brook. Two *palettes* was a choice.
+  The colours now live in one place (`WATER` in `land.ts`), areal water is
+  traced from the same bicubic reconstruction the bake shades with, and the
+  bake stops painting water entirely on any map whose water layer is drawing
+  it — because leaving half of it to each is what produced the seam in the
+  first place.
+- **A picture is not a survey, and things in front of a river hide it.** The
+  Kuttenberg map's watercourses are read off a drawing, and the drawing has
+  trees painted over them — so the colour test returned rivers with stretches
+  simply missing, which became separate rivers with gaps between them. Wrong on
+  the map, and worse in the simulation, where a road walks through the gap
+  without crossing anything. The tempting fix is more morphological closing,
+  and it is the wrong one: a radius big enough to bridge a stand of trees welds
+  every parallel feature together and inflates every width. Gaps are bridged
+  *selectively* instead — a single flood from every piece of water at once,
+  each carrying the component it came from, so that where two floods meet is
+  the shortest crossing between that pair; then shortest-first, one bridge per
+  pair, at the width of the water either side. The network went from 25km in 80
+  fragments to 43km, with the longest unbroken watercourse rising from 1.0km to
+  3.4km and not one width changing. Verified by dumping the mask with the
+  bridges coloured differently: every one sits inline along a stream, none
+  wires two unrelated streams together.
+- **Simplifying a shape threw away what the shape was carrying.** River
+  centrelines are simplified with Douglas-Peucker, which measures how far a
+  point strays from the line between its neighbours — and a watercourse running
+  dead straight through a pond strays not at all. So the pond's points were
+  dropped, the river came out the same width from end to end, and the pond
+  vanished from a river it had just been successfully merged into. The geometry
+  was perfect and the *width profile* it carried was gone. The same test now
+  runs a second time over the widths. A simplifier only preserves what it is
+  told to measure; anything else riding along on those points is silently lost.
+- **Two renderers sharing a job, and only one of them told.** Water is drawn
+  either by the ground bake or by the water layer, never both, and which one
+  is decided by a single flag (`RiverNetwork.drawsOwnWater`). The bake was
+  wired to it; the water layer's *body tracing* was not, so on a procedural
+  world — which says no, because its water is elevation below a line and the
+  bake paints that seamlessly across an endless map — the layer went ahead and
+  traced anyway. It produced 463 lakes, drew every one of them on top of the
+  bake's, and to do it walked a forty-thousand-unit square at load, forcing the
+  generation of every terrain chunk in the world before the first frame. It
+  did not look obviously wrong, which is the danger: a double-drawn lake is
+  still a lake. Found by checking the procedural map after a change that only
+  concerned an imported one. When a flag decides which of two systems owns
+  something, every part of both has to read it, and the cheapest way to catch
+  a miss is to run the path the change was not about.
+- **A test that only sampled steady states could not see the bug.** The ripple
+  overlay is a screen-covering quad slid through a tiling texture to keep the
+  pattern still in the world. Twice it was declared correct on the strength of
+  screenshots taken at one fixed zoom and then another, and twice it was
+  visibly swimming the moment anyone actually zoomed. The cause was that
+  `camera.worldView`, `midPoint` and the camera matrix are all computed in
+  `preRender`, which runs *after* `scene.update` — so positioning the quad
+  during an update used the previous frame's camera. Still camera, no error
+  visible; moving camera, every frame wrong. Anything that has to be kept in
+  step with the camera by hand has to be tested *while the camera is moving*,
+  and the fix is better still: put the thing in world space so the camera
+  transforms it through the same matrix as everything else and there is no
+  hand-written correction left to be wrong.
+- **Measuring the thing that was suspected instead of the thing that was
+  slow.** The water layer was costing most of the frame, and the ripple overlay
+  laid on top of it was the obvious suspect. Measured by alternating each layer
+  on and off within one run — absolute timings in an instrumented loop proved
+  worthless, but interleaved differences were stable — the overlay was 3-4ms
+  and the water `Graphics` underneath it 57ms, against about 10ms for the whole
+  rest of the scene. A Phaser `Graphics` re-walks its command list and
+  re-triangulates every filled shape on every frame, so ninety pieces of water
+  in four bands are paid for sixty times a second. Halving the ribbon vertices
+  changed nothing at all, because the cost is in the number of fills and not
+  their size — worth knowing before optimising the obvious thing twice.
+
+## Known and still open
+
+- **A finite map runs out of frontier, and nothing says so.** Procedural
+  generation always has more country: the frontier can always offer
+  something, so "the offers list is empty" only ever means "not just now".
+  An authored map (`pack.ts`) has a fixed number of sites, and once they are
+  all claimed the list is empty *forever* — observed on the Testvale fixture
+  by day 71, with Expansion Capacity climbing past 450 and nothing on earth
+  to spend it on. Nothing crashes and the economy carries on, so this is a
+  missing ending rather than a bug, but a civilisation quietly accruing a
+  currency that can no longer buy anything is the same shape of dead end as
+  a stall. Wants a real answer — an end state, a victory readout, or
+  something else capacity converts into — before authored maps are the
+  default way to play.
+- **The small-population walking trap** (needs re-measuring). On a sparse
+  seed (1234's neighbour seed 5 reproduces it), a civilisation of four can
+  end up with every last
+  person listed as a node worker but permanently *out* on their own
+  `WorkerDeliverySystem` run, because nobody else is free to come and collect.
+  Production then runs at roughly a third of what those same four people
+  could manage, which supports a population of four, which is why nobody is
+  free. Every part of it behaves as designed — the labour market correctly
+  decides that a spread-out network needs everyone carrying — and it is
+  stable rather than fatal, but it is a stall: a hundred days at population
+  four with twelve connected deposits and every shortage reading zero. The
+  escape a bigger civilisation uses is founding a settlement out by the
+  distant deposits so the hauls get short, and that is gated on having
+  people to found it with, so a poor seed cannot reach it. Worth solving,
+  probably at the "how far is it worth connecting something" end rather than
+  by special-casing small populations.
+
+  *Since the walking-speed correction above, seed 5 measures 53 residents at
+  day 91 rather than the four this entry describes, and the mechanism it
+  names — everyone permanently out carrying — was substantially an artefact
+  of that same wrong number. Re-measure before working on it; what is left
+  of the trap, if anything, is a smaller thing than this entry claims.*
+- ~~**A settlement can still found near real, staffed work and open at zero.**~~
+  *Closed* — see the hand-off entry in the list above. `hasNearbyWorkedSite`
+  now asks the hand-off's own question ("would founding here actually win that
+  worker?") rather than the weaker one, which was the second of the two fixes
+  this entry proposed. Kept here for the record because the diagnosis below is
+  still the clearest statement of the shape of the bug.
+  Even with `hasNearbyWorkedSite` requiring an actual worker nearby (see
+  above), that worker's *home* might already be a different, closer
+  existing seat — `crowding`'s minimum spacing (360) is smaller than
+  `resourceProximity`'s range (520), so a worked site up to 160 units past
+  another settlement's crowding radius can still count as "nearby" for a
+  brand-new settlement while that worker has been calling the older place
+  home the whole time. The hand-off in `foundSettlement` only ever runs
+  once, at the moment of founding, so a settlement that opens without
+  catching anyone stays empty until ordinary hiring or migration happens to
+  reach it — which, being driven by the same civilisation-wide population
+  numbers this document keeps returning to, can take a long time or never
+  quite arrive. Observed directly: a settlement still at zero population
+  thirty-six days after founding, next to a site that had a worker the
+  entire time. Worth solving by either shrinking the gap between the two
+  radii, or by making `hasNearbyWorkedSite` check that the worker's current
+  home is actually *farther* from the candidate position than the candidate
+  itself would be — i.e., that founding here would actually win the
+  hand-off, not just that a worker happens to exist somewhere in range.
+
 ## Explicitly not in scope (for now)
 
-Procedural map generation (the hand-placed map is a stand-in), combat,
-quests, tech trees, direct player-to-villager control, buildings the player
-places, multiplayer. Anything on this list is a candidate for later, once the
-systems above are solid enough that adding it wouldn't just be another
-compensating subsystem for something already shaky.
+Combat, quests, tech trees, direct player-to-villager control, buildings the
+player places, multiplayer. Anything on this list is a candidate for later,
+once the systems above are solid enough that adding it wouldn't just be
+another compensating subsystem for something already shaky.
+
+(Procedural map generation used to head this list. It shipped — see
+`worldgen.ts` and the "what has actually shipped" section above — and the
+line was left here long enough to start misleading. Take a list like this
+off the shelf when the work lands.)

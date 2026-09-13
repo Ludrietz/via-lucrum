@@ -21,12 +21,22 @@ export class RoadDrawing {
     return this.start !== null;
   }
 
+  /**
+   * A drag makes a road if it starts on the network and crosses ground a
+   * villager could walk. Where it *ends* is up to the player: on a site, on
+   * another road, or simply out in open country — see `RoadNetwork.addRoad`
+   * for why a road into the unknown had to become a legal move.
+   */
   get valid(): boolean {
-    if (!this.start || !this.end) return false;
+    if (!this.start) return false;
     if (!this.passable) return false;
     if (this.length < MIN_LENGTH) return false;
     // Ending on the same site you began at would connect nothing.
-    return !(this.start.kind === 'site' && this.end.kind === 'site' && this.start.site === this.end.site);
+    return !(
+      this.start.kind === 'site' &&
+      this.end?.kind === 'site' &&
+      this.start.site === this.end.site
+    );
   }
 
   get path(): Vec2[] {
@@ -81,13 +91,15 @@ export class RoadDrawing {
     const endAnchor = world.anchorAt(point);
     this.end = endAnchor;
 
-    if (!this.valid || !endAnchor) {
+    if (!this.valid) {
       this.cancel();
       return null;
     }
 
     const path = [...this.points];
-    path[path.length - 1] = { ...endAnchor.point };
+    // Snap onto whatever the cursor was over, if anything; otherwise the road
+    // simply finishes where the player let go.
+    path[path.length - 1] = endAnchor ? { ...endAnchor.point } : { ...point };
     this.cancel();
     return path;
   }

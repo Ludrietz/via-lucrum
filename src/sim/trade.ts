@@ -36,6 +36,34 @@ const TRADER_COMFORTABLE = 0.05;
  * held back by two or three beats it.
  */
 const INVESTMENT_STARVATION_WEIGHT = 1.4;
+/**
+ * How much each second a full node has been waiting for a collection lifts its
+ * claim on the next trip, and how far that can go.
+ *
+ * Distance enters a shipment's score as a flat, permanent handicap
+ * (`pickupRoute.resistance / 50`), while being full is worth a flat 400 to
+ * everyone. Two equally-full sites therefore settle their contest purely on
+ * which is nearer — and the nearer one wins it again on the very next tick,
+ * and every tick after, for as long as anywhere closer keeps filling up. A
+ * remote site never earns anything by having been passed over, so it is not
+ * losing a contest so much as permanently excluded from one.
+ *
+ * That is not a mild inefficiency, because `produce()` stops dead while a shed
+ * is full: measured across five seeds at day 150, sites within 360 units of a
+ * seat were emptied about two seconds after filling and had collected 275
+ * units each, while sites 1000-2000 units out sat full for 36 seconds at a
+ * time and had collected *two*. They were staffed the whole while, doing
+ * nothing.
+ *
+ * `fullSince` already measures exactly the right thing — time full with nobody
+ * even dispatched — and already resets itself the moment someone is on the way,
+ * so this grows only while a site is genuinely being ignored and closes as soon
+ * as it is answered. Same shape as `systems.ts`'s `bootstrapWait`, for the same
+ * reason. Capped so a long-ignored site can outrank distance without ever
+ * outranking the question of whether anyone is hungry.
+ */
+const WAITING_WEIGHT = 1;
+const WAITING_MAX = 300;
 
 export interface Shipment {
   source: TradeSource;
@@ -215,10 +243,12 @@ export function findBestShipment(query: ShipmentQuery): Shipment | null {
     best = { source, destination: winner.destination, resource, amount, pickupRoute };
   };
 
-  // Production: a node with a backlog is urgent in proportion to how full it is.
+  // Production: a node with a backlog is urgent in proportion to how full it
+  // is, and — separately — to how long it has been waiting for anyone to come.
   for (const node of query.nodes) {
     if (!node.isConnected) continue;
-    const urgency = (node.isFull ? 400 : 0) + node.available * 20;
+    const waiting = Math.min(WAITING_MAX, node.fullSince * WAITING_WEIGHT);
+    const urgency = (node.isFull ? 400 : 0) + node.available * 20 + waiting;
     consider(node, node.resource, node.available, urgency);
   }
 

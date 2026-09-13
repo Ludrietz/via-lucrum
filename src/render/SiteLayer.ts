@@ -83,8 +83,10 @@ export class SiteLayer {
 
     for (const view of this.views) {
       const { node } = view;
-      view.container.setVisible(node.isVisible);
-      if (!node.isVisible) continue;
+      // Frontier offers are drawn by `FrontierLayer` instead, and look
+      // deliberately unlike anything owned — see that file.
+      view.container.setVisible(node.isClaimed);
+      if (!node.isClaimed) continue;
 
       if (view.drawnState !== node.state) {
         view.drawnState = node.state;

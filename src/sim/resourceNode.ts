@@ -52,6 +52,13 @@ export class ResourceNode {
 
   state: NodeState = NodeState.Hidden;
 
+  /**
+   * Whether the realm has ever surveyed this spot. Monotone on purpose — see
+   * `survey.ts`. Knowing where something is grants no right to it whatsoever;
+   * `isClaimed` remains the only gate on actually using one.
+   */
+  surveyed = false;
+
   /** Villagers who live here permanently. */
   readonly workers: Villager[] = [];
   /** Villagers on their way here to take up work. */
@@ -132,8 +139,34 @@ export class ResourceNode {
     return this.levelInfo.workerCapacity;
   }
 
+  /**
+   * Drawn on the map at all.
+   *
+   * This used to be `state !== Hidden`, which quietly made the frontier offer
+   * list the whole of the visibility model: the player saw the two-to-four
+   * sites currently on the table and nothing else, and a site that stopped
+   * being offered went dark again. Being *offered* and being *known about*
+   * are different facts about a deposit — the first is the realm's current
+   * attention, the second is what the player needs in order to hold any
+   * opinion at all about which way to grow. A claimed site counts regardless:
+   * the realm plainly knows about ground it owns.
+   */
   get isVisible(): boolean {
-    return this.state !== NodeState.Hidden;
+    return this.surveyed || this.isClaimed || this.state === NodeState.Frontier;
+  }
+
+  /**
+   * Part of the realm. Everything that treats a node as the civilisation's
+   * to use — routing, hiring, trade, settlement emergence — has to go through
+   * this rather than `isVisible`, because a frontier offer is visible and is
+   * emphatically not ours yet.
+   */
+  get isClaimed(): boolean {
+    return (
+      this.state === NodeState.Reachable ||
+      this.state === NodeState.Connected ||
+      this.state === NodeState.Operational
+    );
   }
 
   get isConnected(): boolean {

@@ -1,50 +1,16 @@
 import type { Vec2 } from './geometry';
 import { hashRandom, NoiseField } from './noise';
-import { TerrainField, TerrainType, type TerrainSample } from './terrain';
-import { ResourceType, SiteType } from './types';
-
-/**
- * A resource node the way generation produces it — everything `ResourceNode`
- * needs to be constructed, plus nothing else. `World` is what turns these
- * into real `ResourceNode` instances and decides when they become visible;
- * generation only ever decides *where* and *what*.
- */
-export interface GeneratedNode {
-  id: number;
-  name: string;
-  type: SiteType;
-  resource: ResourceType;
-  x: number;
-  y: number;
-  productionInterval: number;
-  capacity: number;
-}
-
-/** The only resources a raw site can actually produce — processed goods come from industries, never from the ground. */
-type RawResource = ResourceType.Wood | ResourceType.Stone | ResourceType.Iron | ResourceType.Food;
-const RAW_RESOURCES: readonly RawResource[] = [
-  ResourceType.Wood,
-  ResourceType.Stone,
-  ResourceType.Iron,
-  ResourceType.Food,
-];
-
-const SITE_TYPE_FOR: Record<RawResource, SiteType> = {
-  [ResourceType.Wood]: SiteType.Forest,
-  [ResourceType.Stone]: SiteType.Quarry,
-  [ResourceType.Iron]: SiteType.Mine,
-  [ResourceType.Food]: SiteType.Farm,
-};
-
-/** Seconds one worker needs for a single unit, before richness or node level have any say. */
-const BASE_PRODUCTION_INTERVAL: Record<RawResource, number> = {
-  [ResourceType.Wood]: 6,
-  [ResourceType.Stone]: 8,
-  [ResourceType.Iron]: 10,
-  [ResourceType.Food]: 6,
-};
-
-const BASE_CAPACITY = 8;
+import {
+  makeGeneratedNode,
+  MIN_NODE_DISTANCE,
+  RAW_RESOURCES,
+  type GeneratedNode,
+  type NodeSource,
+  type NodeSummary,
+  type RawResource,
+} from './source';
+import { isWalkableTo, TerrainField, TerrainType, walkableCellsFrom, type TerrainSample } from './terrain';
+import { ResourceType } from './types';
 
 const clamp01 = (v: number): number => Math.max(0, Math.min(1, v));
 
@@ -131,14 +97,25 @@ export function totalResourceWeight(sample: TerrainSample): number {
  */
 const RESOURCE_BALANCE: Record<RawResource, number> = {
   [ResourceType.Food]: 0.4,
-  [ResourceType.Wood]: 1.0,
-  // Stone is weighted well above what the ground alone would give it because
-  // the *economy* leans on it hardest: it's the upgrade material for both
-  // forests and farms, and the masonry's input. Generation that ignores what
-  // a resource is actually used for produces a world that looks plausible
-  // and plays deadlocked.
-  [ResourceType.Stone]: 2.2,
-  [ResourceType.Iron]: 2.2,
+  // Timber is the second necessity, not a luxury: every resident burns and
+  // builds with it (`DEMAND_PER_CAPITA_PER_MIN` puts it at three fifths of
+  // food), it is what a quarry and a mine need shipped in to grow, it is the
+  // sawmill's input, and housing is made of it. It was nonetheless the
+  // *rarest* thing on the map after iron — seventeen percent of sites — while
+  // stone, which a resident gets through at a fifth the rate, took thirty-one
+  // percent. The consequence was not subtle: with population gated on
+  // necessities, the whole civilisation topped out at thirty residents
+  // against a food supply that could have fed eighty, and every industry sat
+  // permanently starved because no timber was ever spare.
+  [ResourceType.Wood]: 2.2,
+  // Stone stays weighted above what the ground alone would give it — it is
+  // the upgrade material for both forests and farms, and the masonry's input,
+  // so a map with none plays deadlocked — but not above the good the economy
+  // actually eats. Generation that ignores what a resource is *for* produces
+  // a world that looks plausible and plays stuck; so does generation that
+  // over-corrects for one shortage and creates another.
+  [ResourceType.Stone]: 1.7,
+  [ResourceType.Iron]: 1.6,
 };
 
 function pickWeighted(weights: Record<RawResource, number>, roll: number): RawResource {
@@ -178,8 +155,6 @@ const CLUSTER_SIZE_MAX = 5;
 /** How far a deposit's sites spread from its centre — a tight vein or a broad woodland. */
 const CLUSTER_SPREAD_MIN = 130;
 const CLUSTER_SPREAD_MAX = 460;
-/** Two sites never sit closer than this, inside a deposit or across two of them. */
-const MIN_NODE_DISTANCE = 165;
 /**
  * How often a site in a deposit takes the deposit's own trade rather than
  * whatever the ground directly under it happens to favour. High, so a
@@ -197,6 +172,19 @@ const NEAR_RINGS: readonly number[] = [300, 430, 560, 700, 850];
 const FAR_RINGS: readonly number[] = [1500, 1850, 2200];
 /** Stone anywhere inside this counts as "the seed already provided some". */
 const FAR_REACH = 2600;
+
+/** How far apart village-site candidates are tried, and how far the search may wander. */
+const SITE_SEARCH_STEP = 160;
+const SITE_SEARCH_LIMIT = 3200;
+/**
+ * How much of the ground within the opening reach has to be dry land a
+ * villager could actually walk to. Well under half: a coastal village with
+ * the sea on one side is a fine, characterful start — a raft in the middle
+ * of a lake is not.
+ */
+const MIN_WALKABLE_SHARE = 0.45;
+/** How far a site rolled onto water may be nudged to find a shore, in terrain cells. */
+const SHORE_SEARCH_CELLS = 3;
 
 const SALT_CLUSTER_X = 11;
 const SALT_CLUSTER_Y = 12;
@@ -232,7 +220,7 @@ interface RawNode {
  * Two `WorldGenerator`s built from the same seed produce byte-identical
  * worlds; that is the whole point of a seed.
  */
-export class WorldGenerator {
+export class WorldGenerator implements NodeSource {
   readonly terrain: TerrainField;
   private readonly deposits: NoiseField;
   private readonly clusterCache = new Map<string, RawNode[]>();
@@ -289,10 +277,19 @@ export class WorldGenerator {
           // Square-rooted so sites spread evenly over the disc instead of
           // bunching around the centre.
           const radius = Math.sqrt(hashRandom(this.seed, SALT_NODE_RADIUS + i, cx, cy)) * spread;
-          const position: Vec2 = {
+          const rolled: Vec2 = {
             x: centre.x + Math.cos(angle) * radius,
             y: centre.y + Math.sin(angle) * radius,
           };
+          // A fishery is a genuinely good idea — food whose geography is a
+          // lake rather than a field — but it was being placed *in* the
+          // water, and a road cannot cross water, so every one of them was a
+          // site the player could see, could never connect, and could never
+          // do anything about. Beach it: the camp stands on the shore and
+          // works the water beside it, which is both what a fishing village
+          // actually looks like and something a road can reach.
+          const position = this.ashore(rolled);
+          if (!position) continue;
 
           // The ground *under this specific site*, not the deposit's centre:
           // a woodland that spills onto a lake shouldn't put a timber camp
@@ -361,16 +358,14 @@ export class WorldGenerator {
   }
 
   private materialize(node: RawNode): GeneratedNode {
-    return {
-      id: this.nextNodeId++,
-      name: this.nameFor(node.resource),
-      type: SITE_TYPE_FOR[node.resource],
-      resource: node.resource,
-      x: node.position.x,
-      y: node.position.y,
-      productionInterval: BASE_PRODUCTION_INTERVAL[node.resource] / node.richness,
-      capacity: Math.round(BASE_CAPACITY * (0.8 + node.richness * 0.3)),
-    };
+    return makeGeneratedNode(
+      this.nextNodeId++,
+      this.nameFor(node.resource),
+      node.resource,
+      node.position.x,
+      node.position.y,
+      node.richness,
+    );
   }
 
   // ------------------------------------------------------------------ public
@@ -405,6 +400,83 @@ export class WorldGenerator {
   }
 
   /**
+   * The same spot if it is dry, the nearest dry ground if it is not, or null
+   * if this is open water rather than a shoreline. Deterministic (a fixed
+   * outward ring scan), so it cannot make placement depend on generation
+   * order — the one property every seed guarantee rests on.
+   */
+  private ashore(point: Vec2): Vec2 | null {
+    if (this.terrain.sampleAt(point).type !== TerrainType.Water) return point;
+
+    const step = this.terrain.cellSize;
+    for (let ring = 1; ring <= SHORE_SEARCH_CELLS; ring++) {
+      for (let i = 0; i < ring * 8; i++) {
+        const angle = (i / (ring * 8)) * Math.PI * 2;
+        const candidate = {
+          x: point.x + Math.cos(angle) * ring * step,
+          y: point.y + Math.sin(angle) * ring * step,
+        };
+        if (this.terrain.sampleAt(candidate).type !== TerrainType.Water) return candidate;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Where the first village can actually stand.
+   *
+   * The world is generated before anyone asks whether it is habitable, and
+   * `map.ts` hands over the geometric centre of the play area — which is a
+   * coordinate, not a decision. Roughly one seed in ten put that coordinate
+   * in open water: the village floated on a lake, every road out of it
+   * failed `crossesImpassable` on its very first sample, and the game ended
+   * on day 10 having never accepted a single input. Another one in six put
+   * a *starting farm* in water (see `forcePlacement`, which used to exempt
+   * food from the water check outright), which is the same dead end wearing
+   * a friendlier face.
+   *
+   * This is not "the world bending to be nice" — the ground is exactly what
+   * the noise made it, and a seed is still free to be poor, cramped or
+   * awkward. It is siting: people found villages on land they can walk out
+   * of, so the search is for the nearest such land, and the answer stays a
+   * pure function of the seed.
+   */
+  habitableSite(requested: Vec2, reach: number): Vec2 {
+    if (this.isViableSite(requested, reach)) return { ...requested };
+
+    // Outward in rings, so the village lands as close to the requested spot
+    // as the ground allows rather than wherever a scan happens to sweep first.
+    for (let radius = SITE_SEARCH_STEP; radius <= SITE_SEARCH_LIMIT; radius += SITE_SEARCH_STEP) {
+      const steps = Math.max(8, Math.round((2 * Math.PI * radius) / SITE_SEARCH_STEP));
+      for (let i = 0; i < steps; i++) {
+        const angle = (i / steps) * Math.PI * 2;
+        const candidate = {
+          x: requested.x + Math.cos(angle) * radius,
+          y: requested.y + Math.sin(angle) * radius,
+        };
+        if (this.isViableSite(candidate, reach)) return candidate;
+      }
+    }
+
+    return { ...requested };
+  }
+
+  /**
+   * Land a village could work out of: dry, walkable ground with enough
+   * connected dry ground around it to hold an economy. "Connected" is the
+   * part that matters — a sandbar with open water on all sides passes a
+   * naive "is this cell dry" test and still strands everyone on it.
+   */
+  private isViableSite(point: Vec2, reach: number): boolean {
+    const sample = this.terrain.sampleAt(point);
+    if (sample.type === TerrainType.Water || sample.type === TerrainType.Mountains) return false;
+
+    const reachable = walkableCellsFrom(this.terrain, point, reach);
+    const disc = Math.PI * (reach / this.terrain.cellSize) ** 2;
+    return reachable.size >= disc * MIN_WALKABLE_SHARE;
+  }
+
+  /**
    * The one sanctioned exception to "the world is what it is": a freshly
    * founded village has to have a fighting chance regardless of what the
    * dice rolled nearby. If the ordinary placement above didn't put a food
@@ -415,10 +487,18 @@ export class WorldGenerator {
    */
   ensureStartingResources(
     centre: Vec2,
-    existing: readonly { resource: ResourceType; x: number; y: number }[],
+    existing: readonly NodeSummary[],
     reach: number,
   ): GeneratedNode[] {
     const created: GeneratedNode[] = [];
+    // A guaranteed resource is only a guarantee if a road can get to it.
+    // Placement used to check the ground under the site and nothing else, so
+    // a farm across a bay counted toward the quota and stopped the search —
+    // the village then starved beside a food source it could see and could
+    // never reach. Walkability from the village is the honest test.
+    const walkable = walkableCellsFrom(this.terrain, centre, FAR_REACH);
+    const reachableOnFoot = (point: Vec2): boolean =>
+      isWalkableTo(this.terrain, centre, FAR_REACH, walkable, point);
     // Food and wood have to be within the opening influence ring — those two
     // are what the first few minutes actually run on. *Two* food, not one:
     // population is throughput-limited by food, and a single level-one farm
@@ -442,11 +522,14 @@ export class WorldGenerator {
 
     for (const { resource, count, reach: within, rings } of requirements) {
       const have = existing.filter(
-        (n) => n.resource === resource && Math.hypot(n.x - centre.x, n.y - centre.y) <= within,
+        (n) =>
+          n.resource === resource &&
+          Math.hypot(n.x - centre.x, n.y - centre.y) <= within &&
+          reachableOnFoot({ x: n.x, y: n.y }),
       ).length;
 
       for (let i = have; i < count; i++) {
-        const forced = this.forcePlacement(resource, centre, [...existing, ...created], rings);
+        const forced = this.forcePlacement(resource, centre, [...existing, ...created], rings, reachableOnFoot);
         if (!forced) break;
         created.push(forced);
       }
@@ -461,6 +544,7 @@ export class WorldGenerator {
     centre: Vec2,
     avoid: readonly { x: number; y: number }[],
     rings: readonly number[],
+    reachableOnFoot: (point: Vec2) => boolean,
   ): GeneratedNode | null {
     let best: { position: Vec2; weight: number; richness: number } | null = null;
 
@@ -472,8 +556,14 @@ export class WorldGenerator {
 
         if (avoid.some((n) => Math.hypot(n.x - position.x, n.y - position.y) < MIN_NODE_DISTANCE)) continue;
 
+        // Water is out for *everything*, food included. Food used to be
+        // exempted here — presumably the idea was fishing — but nothing in
+        // the game can work a site it cannot lay a road to, so an exempted
+        // farm was simply a farm nobody could ever reach, placed by the very
+        // routine whose job is to guarantee a workable start.
         const sample = this.terrain.sampleAt(position);
-        if (sample.type === TerrainType.Water && resource !== ResourceType.Food) continue;
+        if (sample.type === TerrainType.Water) continue;
+        if (!reachableOnFoot(position)) continue;
         const weight = resourceWeights(sample)[resource];
         if (!best || weight > best.weight) {
           best = { position, weight, richness: 0.85 + weight * 0.3 };
@@ -484,16 +574,14 @@ export class WorldGenerator {
     }
 
     if (!best) return null;
-    return {
-      id: this.nextNodeId++,
-      name: this.nameFor(resource),
-      type: SITE_TYPE_FOR[resource],
+    return makeGeneratedNode(
+      this.nextNodeId++,
+      this.nameFor(resource),
       resource,
-      x: best.position.x,
-      y: best.position.y,
-      productionInterval: BASE_PRODUCTION_INTERVAL[resource] / best.richness,
-      capacity: Math.round(BASE_CAPACITY * (0.8 + best.richness * 0.3)),
-    };
+      best.position.x,
+      best.position.y,
+      best.richness,
+    );
   }
 }
 

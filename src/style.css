@@ -234,3 +234,135 @@ html, body {
 
 #inspect .note { margin-top: 6px; line-height: 1.5; }
 #inspect .divider { margin: 9px 0; }
+
+/* ---- expansion capacity ----
+   The number the whole progression loop is waiting on, so it sits under the
+   day counter rather than inside a panel the player has to go and find. */
+#capacity {
+  top: 132px;
+  left: 20px;
+  min-width: 214px;
+  padding: 12px 16px 13px;
+}
+
+.cap-label {
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: var(--ink-soft);
+}
+
+.cap-value {
+  font-size: 22px;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  margin-top: 4px;
+}
+
+.cap-target {
+  font-size: 12px;
+  color: var(--ink-soft);
+  letter-spacing: 0.05em;
+}
+
+.cap-track {
+  height: 3px;
+  background: rgba(58, 49, 37, 0.14);
+  border-radius: 2px;
+  margin: 7px 0 6px;
+  overflow: hidden;
+}
+
+.cap-fill {
+  height: 100%;
+  background: #8a6f3a;
+  transition: width 220ms ease-out;
+}
+
+.cap-rate {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.cap-breakdown {
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
+}
+
+.cap-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.65;
+}
+
+/* ---- claiming a frontier site ---- */
+.claim { pointer-events: auto; }
+
+.claim-cost {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 9px;
+}
+
+.claim-label {
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: var(--ink-soft);
+}
+
+.claim-value {
+  font-size: 19px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+.claim-cost.short .claim-value { color: #9c3b2f; }
+
+.claim-button {
+  width: 100%;
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  color: var(--parchment);
+  background: #5c4a2a;
+  border: 1px solid rgba(58, 49, 37, 0.4);
+  border-radius: 3px;
+  padding: 8px 0;
+  cursor: pointer;
+}
+
+.claim-button:hover:not(:disabled) { background: #6d5832; }
+
+.claim-button:disabled {
+  color: var(--ink-soft);
+  background: transparent;
+  border-color: var(--line);
+  cursor: default;
+  letter-spacing: 0.06em;
+}
+
+.claim .note { margin-top: 9px; }
+
+/* A map pack that would not load. The one boot failure a person can fix, so
+   it is shown on the page rather than only in the console. */
+.boot-error {
+  position: absolute;
+  z-index: 50;
+  top: 24px;
+  left: 320px;
+  right: 24px;
+  margin: 0;
+  padding: 16px 20px;
+  border: 1px solid var(--ink);
+  background: var(--parchment, #efe6d2);
+  color: var(--ink);
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+}

@@ -1,5 +1,5 @@
-import { shortage, wealthIncomePerMin, type Trader } from './economy';
-import { ResourceType } from './types';
+import { DEMAND_PER_CAPITA_PER_MIN, shortage, wealthIncomePerMin, type Trader } from './economy';
+import { RAW_GOODS } from './traffic';
 
 /**
  * How a place actually climbs the tier ladder: wealth generation and
@@ -10,17 +10,16 @@ import { ResourceType } from './types';
  * disconnected number it accumulated.
  */
 
-/** Points per second gained while comfortably wealthy for the population on hand. */
-const FAST_RATE = 0.35;
-/** Points per second gained while getting by, but not comfortably. */
-const SLOW_RATE = 0.08;
-/** Points per second lost at the worst possible neglect — decline bites faster than growth pays off. */
-const MAX_DECLINE_RATE = 1.6;
-
-/** Below this shortfall, comfort counts as genuinely comfortable. */
-const COMFORTABLE = 0.1;
-/** Above this, it's bad enough that development starts sliding backwards. */
-const STRUGGLING = 0.5;
+/** Points per second at the very best a place can be doing. */
+const BEST_RATE = 0.35;
+/** Points per second at the very worst. Steeper than growth — neglect bites — but not the twentyfold gap it used to be. */
+const WORST_RATE = 0.6;
+/**
+ * The comfort a place neither grows nor slides at. Below the midpoint on
+ * purpose: an ordinary, decently-run place should tick upward, and it should
+ * take real neglect — not merely being unremarkable — to lose ground.
+ */
+const BREAK_EVEN = 0.45;
 
 /** Floor so a bad patch is recoverable rather than a hole dug forever. */
 const MIN_DEVELOPMENT = -100;
@@ -46,6 +45,13 @@ const POPULATION_FLOOR = 2;
  * as a large middling one.
  */
 const WEALTH_PER_CAPITA_TARGET = 0.5;
+/**
+ * How much of comfort is "is this place supplied" versus "is it earning".
+ * Weighted toward provision: every place can reach it by being well run,
+ * while wealth income depends on having somewhere to sell to or something
+ * to refine, which is not available to everyone at every stage.
+ */
+const PROVISION_WEIGHT = 0.65;
 
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
 
@@ -70,27 +76,68 @@ const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
  */
 function comfort(trader: Trader): number {
   const populationFactor = clamp01(trader.population / POPULATION_FLOOR);
-  const fedFactor = 1 - shortage(trader, ResourceType.Food);
   const incomeTarget = WEALTH_PER_CAPITA_TARGET * Math.max(1, trader.population);
   const wealthFactor = clamp01(wealthIncomePerMin(trader) / incomeTarget);
-  return populationFactor * (0.5 * fedFactor + 0.5 * wealthFactor);
+  return populationFactor * (PROVISION_WEIGHT * provision(trader) + (1 - PROVISION_WEIGHT) * wealthFactor);
 }
 
 /**
- * How fast development is currently moving, in points per second. Positive
- * and quick while comfortably populated and earning, positive but slow
- * while only getting by, and negative — sliding back down the ladder — once
- * that shortfall is bad enough to call it real neglect rather than a slow
- * week. An empty or penniless place saturates at the fastest decline.
+ * How well a place is actually supplied, across everything its residents
+ * live on, weighted by how much of each they get through.
+ *
+ * Food alone was the whole of this term, and it made the formula knife-edged
+ * in a way that is easy to miss on paper: a perfectly fed place with no
+ * wealth income scored exactly 0.5, which is exactly `STRUGGLING`, so the
+ * *smallest* dip in the larder tipped it from "slow climb" into "fastest
+ * decline". In practice the founding village — the one place in the game
+ * structurally guaranteed to earn no wealth, because it is where everything
+ * is carried *to* rather than sold *from* — sat at the development floor
+ * with sixty-seven well-fed residents, permanently labelled a hamlet.
+ *
+ * Weighting by demand is what makes this a real readout rather than a single
+ * boolean about grain: food and firewood are most of what a place needs, so
+ * covering those two alone already reads as "getting by", and stone, iron
+ * and the worked goods on top of them are what "thriving" actually means.
+ * Wealth still decides who reaches the fast lane; it is no longer the
+ * difference between holding on and sliding.
+ */
+function provision(trader: Trader): number {
+  let weight = 0;
+  let met = 0;
+  // Raw goods only. The worked goods are deliberately left out: they sit at
+  // full shortage at every place in the game until somebody's industry is
+  // actually running, so counting them here would mean *no* place could be
+  // well provisioned during the entire early game — the same saturation trap
+  // that made `MigrationSystem`'s opportunity score inert. Industry's
+  // contribution to a place doing well arrives through the wealth term
+  // instead, which is where it belongs.
+  for (const resource of RAW_GOODS) {
+    const w = DEMAND_PER_CAPITA_PER_MIN[resource];
+    weight += w;
+    met += w * (1 - shortage(trader, resource));
+  }
+  return weight > 0 ? met / weight : 0;
+}
+
+/**
+ * How fast development is currently moving, in points per second: a straight
+ * line through `BREAK_EVEN`, positive above it and negative below.
+ *
+ * This used to be three flat zones — fast, slow, and a decline that ramped to
+ * more than four times the fast rate. Two things were wrong with that. The
+ * cliff sat exactly where an ordinary well-run place landed, so the same
+ * village would flip between climbing and crashing on a rounding error in
+ * its larder. And the asymmetry meant a place had to be comfortable roughly
+ * two-thirds of the time merely to hold station, which in practice meant
+ * almost everywhere lived pinned at the development floor wearing a "hamlet"
+ * label over sixty-odd residents. Development is supposed to be a readout of
+ * how a place is doing; a readout should move smoothly with the thing it
+ * reads, not snap between three states.
  */
 export function developmentRate(trader: Trader): number {
-  const severity = 1 - comfort(trader);
-
-  if (severity <= COMFORTABLE) return FAST_RATE;
-  if (severity <= STRUGGLING) return SLOW_RATE;
-
-  const over = (severity - STRUGGLING) / (1 - STRUGGLING);
-  return -MAX_DECLINE_RATE * over;
+  const c = comfort(trader);
+  if (c >= BREAK_EVEN) return (BEST_RATE * (c - BREAK_EVEN)) / (1 - BREAK_EVEN);
+  return (-WORST_RATE * (BREAK_EVEN - c)) / BREAK_EVEN;
 }
 
 export function advanceDevelopment(trader: Trader, dt: number): void {

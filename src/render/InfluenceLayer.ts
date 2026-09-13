@@ -1,7 +1,5 @@
 import Phaser from 'phaser';
-import type { Trader } from '../sim/economy';
 import { closestPointOnPolyline, type Vec2 } from '../sim/geometry';
-import { WEAR_FULL } from '../sim/traffic';
 import type { World } from '../sim/world';
 import { type Bounds, traceContours } from './marchingSquares';
 import { COLORS, DEPTH } from './theme';
@@ -10,13 +8,12 @@ import { COLORS, DEPTH } from './theme';
 const TARGET_CELLS_ACROSS = 130;
 const MIN_CELL = 22;
 const THRESHOLD = 0.1;
-/** How much of a settlement's field a busy road drags out along itself. */
-const CORRIDOR_RADIUS = 90;
-const CORRIDOR_WEIGHT = 0.4;
-/** Ignore roads too quiet to be worth the extra field sampling. */
-const CORRIDOR_MIN_WEAR = 0.35;
-/** Guard against a huge network making this expensive; corridors are a flourish, not a requirement. */
-const MAX_CORRIDOR_SEGMENTS = 260;
+/**
+ * How wide the ground taken in alongside a claim is drawn. Mirrors the link
+ * width in `territory.ts`, so what the player sees is what the simulation
+ * actually holds.
+ */
+const LINK_RADIUS = 210;
 
 const REDRAW_INTERVAL = 0.4;
 const EASE_RATE = 2.2;
@@ -27,36 +24,56 @@ interface Centre {
   radius: number;
 }
 
-interface Corridor {
-  a: Vec2;
-  b: Vec2;
-}
-
 /**
- * The realm, drawn the way a map of one looks: soft fill, a clear line at
- * the edge, and one coherent shape rather than a ring around every place
- * that has people in it. Every settlement's reach is folded into a single
- * scalar field (so two nearby places blend into one region rather than a
- * pair of overlapping bubbles) and the field's threshold is traced with
- * marching squares, which is what gives the border its organic, hand-drawn
- * irregularity instead of a stack of perfect circles.
+ * The realm: soft fill, a clear line at the edge, and one coherent shape
+ * rather than a ring around every place that has people in it.
+ *
+ * The technique here survived the expansion redesign intact — every holding
+ * contributes a smooth bump to one scalar field, and the field's threshold is
+ * traced with marching squares, which is what gives the border its organic,
+ * hand-drawn irregularity instead of a stack of perfect circles. What changed
+ * is what feeds it. It used to be each place's *influence radius*, read off
+ * its tier, so the border swelled on its own whenever the simulation had a
+ * good week, and a busy road dragged it out along itself. Now it is
+ * `World.territory` — the ground the civilisation has actually taken in — so
+ * the border only ever moves because somebody decided it should.
+ *
+ * That also makes the shape stable, which the old one was not: tier is a
+ * continuous, wobbling readout, so the border used to breathe in and out with
+ * every fluctuation in food. Holdings change only when something is claimed
+ * or a settlement changes tier, so the line stays put between real events and
+ * a claim reads as a genuine, legible expansion.
  */
 export class InfluenceLayer {
   private readonly gfx: Phaser.GameObjects.Graphics;
-  private readonly easedRadius = new Map<Trader, number>();
+  /** Keyed by holding, so newly-claimed ground can grow in rather than pop. */
+  private readonly easedRadius = new Map<string, number>();
   private redrawTimer = 0;
   private lastFingerprint = '';
+  /**
+   * Current camera zoom. The border is drawn in world coordinates, so a line
+   * given a fixed width thins to nothing as the player zooms out — at 0.42x
+   * a 2.2-unit stroke is under a pixel, and the realm's edge simply vanished
+   * against the terrain. Widths below are divided by this so the line holds
+   * the same apparent weight at any zoom, which is what a border on a map
+   * does.
+   */
+  private zoom = 1;
 
   constructor(scene: Phaser.Scene, private readonly world: World) {
     this.gfx = scene.add.graphics().setDepth(DEPTH.influence);
   }
 
-  update(dt: number): void {
+  update(dt: number, zoom: number): void {
+    this.zoom = zoom;
     const k = 1 - Math.exp(-EASE_RATE * dt);
-    for (const trader of this.world.traders) {
-      const target = trader.influenceRadius;
-      const current = this.easedRadius.get(trader) ?? target;
-      this.easedRadius.set(trader, current + (target - current) * k);
+    for (const holding of this.world.territory.all) {
+      // A holding the renderer has not seen before starts at nothing and
+      // grows to its full size, so claiming somewhere is a visible event:
+      // the realm reaches out and takes the ground in over a moment or two
+      // rather than a new shape simply being there on the next frame.
+      const current = this.easedRadius.get(holding.key) ?? 0;
+      this.easedRadius.set(holding.key, current + (holding.radius - current) * k);
     }
 
     this.redrawTimer += dt;
@@ -71,36 +88,38 @@ export class InfluenceLayer {
 
   /** Coarse enough that continuous easing doesn't trigger a redraw every tick. */
   private fingerprint(): string {
-    const radii = this.world.traders.map((t) => Math.round((this.easedRadius.get(t) ?? 0) / 6)).join(',');
-    const wear = this.world.network.edges
-      .filter((e) => e.isBuilt)
-      .map((e) => Math.round((this.world.wearOf(e) / WEAR_FULL) * 8))
-      .join(',');
-    return `${radii}|${wear}`;
+    return this.world.territory.all
+      .map((h) => `${h.key}:${Math.round((this.easedRadius.get(h.key) ?? 0) / 6)}`)
+      .join(',') + '|' + Math.round(Math.log2(Math.max(0.05, this.zoom)) * 4);
   }
 
   private draw(): void {
     const g = this.gfx;
     g.clear();
 
-    const centres: Centre[] = this.world.traders
-      .map((t) => ({ position: t.position, radius: this.easedRadius.get(t) ?? t.influenceRadius }))
-      .filter((c) => c.radius > 4);
-    if (centres.length === 0) return;
+    const holdings = this.world.territory.all
+      .map((h) => ({ holding: h, radius: this.easedRadius.get(h.key) ?? 0 }))
+      .filter((h) => h.radius > 4);
+    if (holdings.length === 0) return;
 
-    const corridors = this.roadCorridors();
-    const bounds = this.boundsFor(centres);
+    const bounds = this.boundsFor(holdings.map((h) => ({ position: h.holding.position, radius: h.radius })));
     const cell = Math.max(MIN_CELL, Math.max(bounds.x1 - bounds.x0, bounds.y1 - bounds.y0) / TARGET_CELLS_ACROSS);
 
     const field = (x: number, y: number): number => {
       let sum = 0;
-      for (const c of centres) {
-        const d = Math.hypot(x - c.position.x, y - c.position.y);
-        if (d < c.radius) sum += 1 - (d / c.radius) ** 2;
-      }
-      for (const corridor of corridors) {
-        const d = closestPointOnPolyline([corridor.a, corridor.b], { x, y }).distance;
-        if (d < CORRIDOR_RADIUS) sum += CORRIDOR_WEIGHT * (1 - (d / CORRIDOR_RADIUS) ** 2);
+      for (const { holding, radius } of holdings) {
+        const d = Math.hypot(x - holding.position.x, y - holding.position.y);
+        if (d < radius) sum += 1 - (d / radius) ** 2;
+        // The corridor taken in alongside a claim, drawn at the same fraction
+        // of its final width as the holding it serves — so the realm visibly
+        // reaches *out along* the link rather than the far end appearing
+        // first and the middle catching up.
+        if (holding.link) {
+          const grown = radius / Math.max(1, holding.radius);
+          const width = LINK_RADIUS * grown;
+          const linkDistance = closestPointOnPolyline([holding.link, holding.position], { x, y }).distance;
+          if (linkDistance < width) sum += 1 - (linkDistance / width) ** 2;
+        }
       }
       return sum;
     };
@@ -109,8 +128,12 @@ export class InfluenceLayer {
 
     // Settled ground: a soft fill under everything, then a clearer line per loop.
     const shapedLoops = loops.map((loop) => jitterLoop(chaikin(loop, 2), WOBBLE));
-    for (const loop of shapedLoops) this.fillLoop(g, loop, COLORS.influence, 0.05);
-    for (const loop of shapedLoops) this.strokeLoop(g, loop, COLORS.influence, 0.6);
+    for (const loop of shapedLoops) this.fillLoop(g, loop, COLORS.influence, 0.1);
+    // Dark casing first, warm line over it — the same two-pass trick the roads
+    // use, and what makes the edge legible over pale fields and dark forest
+    // alike rather than only over one of them.
+    for (const loop of shapedLoops) this.strokeLoop(g, loop, COLORS.ink, 0.28, 3.2);
+    for (const loop of shapedLoops) this.strokeLoop(g, loop, 0x8a6f3a, 0.95, 1.5);
   }
 
   private fillLoop(g: Phaser.GameObjects.Graphics, points: Vec2[], color: number, alpha: number): void {
@@ -123,9 +146,11 @@ export class InfluenceLayer {
     g.fillPath();
   }
 
-  private strokeLoop(g: Phaser.GameObjects.Graphics, points: Vec2[], color: number, alpha: number): void {
+  private strokeLoop(g: Phaser.GameObjects.Graphics, points: Vec2[], color: number, alpha: number, width: number): void {
     if (points.length < 3) return;
-    g.lineStyle(2.2, color, alpha);
+    // Width in *screen* terms, so the line neither vanishes when zoomed out
+    // nor turns into a fat band when zoomed in.
+    g.lineStyle(width / Math.max(0.05, this.zoom), color, alpha);
     g.beginPath();
     g.moveTo(points[0].x, points[0].y);
     for (const p of points.slice(1)) g.lineTo(p.x, p.y);
@@ -146,26 +171,8 @@ export class InfluenceLayer {
       y1 = Math.max(y1, c.position.y + c.radius);
     }
 
-    const margin = CORRIDOR_RADIUS + 40;
+    const margin = LINK_RADIUS + 40;
     return { x0: x0 - margin, y0: y0 - margin, x1: x1 + margin, y1: y1 + margin };
-  }
-
-  /** Busy roads pull the field out along themselves, not just their ends. */
-  private roadCorridors(): Corridor[] {
-    const out: Corridor[] = [];
-
-    for (const edge of this.world.network.edges) {
-      if (!edge.isBuilt || out.length >= MAX_CORRIDOR_SEGMENTS) break;
-
-      const weight = this.world.wearOf(edge) / WEAR_FULL;
-      if (weight < CORRIDOR_MIN_WEAR) continue;
-
-      for (let i = 0; i < edge.points.length - 1 && out.length < MAX_CORRIDOR_SEGMENTS; i++) {
-        out.push({ a: edge.points[i], b: edge.points[i + 1] });
-      }
-    }
-
-    return out;
   }
 }
 

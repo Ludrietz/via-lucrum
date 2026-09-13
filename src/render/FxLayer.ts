@@ -16,6 +16,17 @@ export class FxLayer {
           this.floatingText(event.at, event.name.toUpperCase(), COLORS.inkSoft, 44);
           break;
 
+        // The single most important moment in the progression loop, so it
+        // gets the loudest thing this layer does: a wide ring pushing outward
+        // from the new holding while the border itself grows out to meet it
+        // (see `InfluenceLayer`, which eases a fresh holding in from nothing).
+        case 'claimed':
+          this.pulse(event.at, 190, COLORS.influence, 1600);
+          this.pulse(event.at, 110, COLORS.village, 1100);
+          this.floatingText(event.at, `${event.name.toUpperCase()} IS OURS`, COLORS.ink, 58);
+          this.floatingText(event.at, `−${event.cost}`, COLORS.inkSoft, 30);
+          break;
+
         case 'connected':
           this.pulse(event.at, 34, COLORS.roadCasing, 650);
           break;

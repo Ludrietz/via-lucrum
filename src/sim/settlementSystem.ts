@@ -2,7 +2,8 @@ import { dist, type Vec2 } from './geometry';
 import type { ResourceNode } from './resourceNode';
 import type { RoadNetwork } from './roadNetwork';
 import { Settlement, SettlementStage, stageFor, tradeFor, type Trade } from './settlement';
-import { TerrainType, type TerrainField } from './terrain';
+import type { TerrainSource } from './source';
+import { TerrainType } from './terrain';
 import { dominantGood, WEAR_FULL, type TrafficField } from './traffic';
 import { ResourceType } from './types';
 import type { Village } from './village';
@@ -14,11 +15,15 @@ import type { Village } from './village';
  */
 export interface SettlementContext {
   traffic: TrafficField;
-  terrain: TerrainField;
+  terrain: TerrainSource;
   network: RoadNetwork;
   nodes: ResourceNode[];
   village: Village;
   settlements: Settlement[];
+  /** Everyone, everywhere — a new place has to have people available to fill it. */
+  population: number;
+  /** Whether the realm actually holds this ground — see `tryFound`. */
+  held(point: Vec2): boolean;
   hours: number;
   found(patch: number, position: Vec2, trade: Trade, potential: number, origin: Origin): void;
 }
@@ -83,6 +88,24 @@ export const SETTLEMENT_TUNING = {
   /** Crowding stops biting entirely at this distance. */
   comfortableSpacing: 640,
 } as const;
+
+/**
+ * Residents a civilisation needs per place before it may found another.
+ * Matched to the Village tier's own population bar (`tier.ts`'s
+ * `TIER_POPULATION_THRESHOLDS`, 8), so a civilisation that could not support
+ * a second real village does not get to scatter hamlets it will never fill.
+ *
+ * The gate below used to read `(places + 1) * POPULATION_PER_PLACE`, which
+ * counts the settlement-about-to-be-founded twice — once as `places`, once
+ * again as the `+ 1`. At the old constant (12) that demanded a population of
+ * 24 just to found the *first* settlement, above even the Town population
+ * bar (18), and every settlement after it got stricter twice as fast as
+ * intended. Playtesting a civilisation that had claimed two dozen sites in
+ * a long chain never got past its first settlement — not because the gate
+ * was working as designed, but because it was quietly asking for roughly
+ * triple what the comment above says it should.
+ */
+const POPULATION_PER_PLACE = 9;
 
 /** How willingly each kind of ground is built on. */
 const TERRAIN_SUITABILITY: Record<TerrainType, number> = {
@@ -258,7 +281,9 @@ export class SettlementSystem {
     let best = 0;
 
     for (const node of ctx.nodes) {
-      if (!node.isVisible) continue;
+      // Claimed sites only: an opportunity beyond the border is not work
+      // anybody can do yet, so it is no reason for a place to grow here.
+      if (!node.isClaimed) continue;
 
       const d = dist(node.position, position);
       if (d < SETTLEMENT_TUNING.resourceExclusion) return 0;
@@ -268,6 +293,47 @@ export class SettlementSystem {
     }
 
     return best;
+  }
+
+  /**
+   * Whether a real, staffed workplace sits close enough to actually hand a
+   * new settlement its first resident the moment it founds — see `tryFound`.
+   * Same band as `resourceProximity`; this only narrows *which* sites in it
+   * count.
+   */
+  private hasNearbyWorkedSite(position: Vec2, ctx: SettlementContext): boolean {
+    // Not merely "is somebody working nearby" but "would founding here
+    // actually *win* that worker" — which is the condition the hand-off in
+    // `World.foundSettlement` really runs on: a villager moves house only if
+    // the new place becomes the nearest trader to their workplace.
+    //
+    // Asking the weaker question let a settlement found beside a busy site
+    // whose worker already called a closer, older place home, and the
+    // hand-off then caught nobody. Re-homing happens once, at founding, and
+    // is never reconsidered, so such a place opens at zero and has no
+    // residents with which to attract more — observed twice in a single
+    // hundred-and-fifty-day run, both still at population zero and at the
+    // development floor at the end of it. The gap is structural rather than
+    // unlucky: `crowding`'s minimum spacing (360) is smaller than
+    // `resourceRange` (520), so there is always a band in which a site is
+    // "nearby" for a new settlement and nearer still to an existing one.
+    //
+    // Checking the hand-off's own condition closes it exactly, with no new
+    // spacing constant to keep in sync with two others.
+    for (const node of ctx.nodes) {
+      if (!node.isClaimed || node.workers.length === 0) continue;
+      const d = dist(node.position, position);
+      if (d < SETTLEMENT_TUNING.resourceExclusion || d > SETTLEMENT_TUNING.resourceRange) continue;
+      if (d < this.distanceToNearestSeat(node.position, ctx)) return true;
+    }
+    return false;
+  }
+
+  /** How far the nearest place people already live is from a point. */
+  private distanceToNearestSeat(point: Vec2, ctx: SettlementContext): number {
+    let nearest = dist(ctx.village.position, point);
+    for (const settlement of ctx.settlements) nearest = Math.min(nearest, dist(settlement.position, point));
+    return nearest;
   }
 
   /** Nothing grows in the shadow of somewhere that already exists. */
@@ -301,6 +367,62 @@ export class SettlementSystem {
     // nearby work.
     const resources = this.lastParts.get(patch)?.resources ?? 0;
     if (resources < SETTLEMENT_TUNING.minimumResourceProximity) return;
+
+    // People settle on the realm's own ground, and nowhere else.
+    //
+    // This is the border's job. Before it existed, `Territory` was consulted
+    // by exactly two things — what a claim costs, and how far ahead the world
+    // needs generating — neither of which the player ever sees, so the line
+    // drawn across the map was decoration: settlements founded wherever the
+    // traffic happened to be busy, cheerfully outside the realm they
+    // supposedly belonged to, and claiming ground bought nothing anyone could
+    // point at.
+    //
+    // With this, a claim is what it should always have been: opening a
+    // province the realm can actually grow into. It closes the loop the two
+    // verbs are supposed to form — prosper, earn capacity, take in country,
+    // *have somewhere for a town to appear*, prosper — where before the
+    // middle link was missing and towns appeared regardless of whether the
+    // player had ever expanded at all.
+    //
+    // A hard gate rather than a discount, which this project is otherwise
+    // rightly wary of: "the realm does not hold this ground" is categorical
+    // in the same way "a settlement cannot sit on top of a resource site" is,
+    // not a matter of degree. It cannot deadlock, because founding already
+    // requires a *claimed, staffed* site within `resourceRange` (520) and a
+    // claim holds `CLAIM_RADIUS` (380) of ground around itself plus the whole
+    // corridor back to the realm — so any patch this gate rejects has held
+    // ground a couple of hundred units away, and the traffic that made it a
+    // candidate runs through that ground too.
+    if (!ctx.held(position)) return;
+
+    // `resources` alone counts a claimed-but-unstaffed site exactly the same
+    // as a busy one — it only asks "is there ground worth working nearby",
+    // not "is anyone actually working it right now". `World.foundSettlement`
+    // gives a brand-new settlement its first residents by re-homing whoever
+    // is already working the nearest site to it; if nobody is working
+    // anywhere nearby at the moment of founding, that hand-off has nobody to
+    // hand off, and the settlement opens at zero with nothing left to change
+    // that — hiring and migration both key off *existing* settlements
+    // pulling people in, not empty ones with no residents to attract more.
+    // Observed directly: a settlement thirty-six days old, still at zero,
+    // sitting on a resource site nobody had been posted to yet when it
+    // founded. Requiring a worked site nearby is the same gate the founding
+    // hand-off already assumes; this just makes it real.
+    if (!this.hasNearbyWorkedSite(position, ctx)) return;
+
+    // Places are founded by people, and there have to be some to spare.
+    // Nothing checked this, so once the network got busy enough that several
+    // patches cleared the potential threshold at once, settlements appeared
+    // at whatever rate the traffic allowed — ten of them for a civilisation
+    // of thirty, four of which never held a single resident and sat at the
+    // development floor forever wearing a name and a label. That is the
+    // "0-population settlement" failure in its purest form, and no amount of
+    // tuning migration fixes it, because the problem is that the place should
+    // never have existed yet. A civilisation earns its next village by being
+    // big enough to populate one.
+    const places = ctx.settlements.length + 1;
+    if (ctx.population < places * POPULATION_PER_PLACE) return;
 
     const tally = ctx.traffic.goodsAtIndex(patch);
     const { resource, share } = dominantGood(tally);

@@ -1,7 +1,7 @@
 import { emptyAmounts } from './economy';
 import { dist, type Vec2 } from './geometry';
 import { Industry, IndustryType } from './industry';
-import { Tier, TIER_INFLUENCE, TIER_RADIUS, tierFor } from './tier';
+import { Tier, TIER_FOOTPRINT, TIER_RADIUS, tierFor } from './tier';
 import { ResourceType } from './types';
 
 /**
@@ -160,13 +160,9 @@ export class Settlement {
     return TIER_RADIUS[this.tier];
   }
 
-  /**
-   * How far this place makes the world legible. A hamlet is a modest second
-   * centre; a city is a real one. This is what turns the network into
-   * something that opens up more of the map rather than only the first village.
-   */
-  get influenceRadius(): number {
-    return TIER_INFLUENCE[this.tier];
+  /** How much ground this place sits on — its presence, not its reach. See `tier.ts`. */
+  get footprintRadius(): number {
+    return TIER_FOOTPRINT[this.tier];
   }
 
   ageInDays(nowHours: number): number {

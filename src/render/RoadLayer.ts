@@ -22,6 +22,8 @@ interface EdgeShape {
   samples: Vec2[];
   cum: number[];
   widths: Float32Array;
+  /** Which samples stand over water — the stretches that are bridges. */
+  wet: boolean[];
 }
 
 /**
@@ -98,6 +100,9 @@ export class RoadLayer {
         // Start at the width the ground already justifies, so a road that is
         // split in two does not visibly flinch.
         widths: Float32Array.from(samples, (p) => roadWidth(this.world.traffic.wearAt(p))),
+        // Terrain under a finished road never changes, so this is worked out
+        // once with the rest of the shape rather than per frame.
+        wet: samples.map((p) => !this.world.terrain.isPassable(p)),
       };
       this.shapes.set(edge.id, shape);
     }
@@ -128,6 +133,7 @@ export class RoadLayer {
       if (count < 2) continue;
 
       this.drawBandedRibbon(g, shape, count);
+      this.drawBridges(g, shape, count);
     }
 
     this.drawJunctions(g);
@@ -162,6 +168,68 @@ export class RoadLayer {
     }
   }
 
+
+  /**
+   * Draw the stretches where a road stands over water.
+   *
+   * Worth its own pass rather than a colour change, because a bridge is the
+   * one piece of infrastructure in this game that is genuinely *built* rather
+   * than worn into the ground, and it should read that way: a plank deck with
+   * posts at each end, drawn the way the rest of the map draws made things.
+   * Without it a road simply ignores a river on screen, which is exactly the
+   * reading the mechanic is trying to correct — the crossing is the expensive,
+   * deliberate part of the route and the eye should go to it.
+   */
+  private drawBridges(g: Phaser.GameObjects.Graphics, shape: EdgeShape, count: number): void {
+    let start = -1;
+
+    for (let i = 0; i < count; i++) {
+      const wet = shape.wet[i];
+      if (wet && start < 0) start = i;
+      if ((!wet || i === count - 1) && start >= 0) {
+        // One sample either side, so the deck lands on the bank rather than
+        // stopping at the waterline.
+        this.bridge(g, shape, Math.max(0, start - 1), Math.min(count - 1, wet ? i : i - 1 + 1));
+        start = -1;
+      }
+    }
+  }
+
+  /** A plank deck between two banks, with a post at each end. */
+  private bridge(g: Phaser.GameObjects.Graphics, shape: EdgeShape, from: number, to: number): void {
+    if (to <= from) return;
+    const points = shape.samples.slice(from, to + 1);
+    if (points.length < 2) return;
+
+    const deck = Math.max(9, roadWidth(2) + 4);
+
+    // The deck itself: pale timber, a little wider than the road it carries.
+    const widths = points.map(() => deck);
+    this.ribbon(g, points, widths, 3, COLORS.ink, 0.55, true, true);
+    this.ribbon(g, points, widths, 0, COLORS.parchmentLight, 0.95, true, true);
+
+    // Planks across it, and posts at the ends.
+    g.lineStyle(1.4, COLORS.ink, 0.45);
+    for (let i = 0; i < points.length; i++) {
+      const previous = points[Math.max(0, i - 1)];
+      const next = points[Math.min(points.length - 1, i + 1)];
+      const dx = next.x - previous.x;
+      const dy = next.y - previous.y;
+      const length = Math.hypot(dx, dy) || 1;
+      const nx = -dy / length;
+      const ny = dx / length;
+      const half = deck / 2;
+      g.beginPath();
+      g.moveTo(points[i].x - nx * half, points[i].y - ny * half);
+      g.lineTo(points[i].x + nx * half, points[i].y + ny * half);
+      g.strokePath();
+    }
+
+    g.fillStyle(COLORS.ink, 0.7);
+    for (const end of [points[0], points[points.length - 1]]) {
+      g.fillCircle(end.x, end.y, 2.4);
+    }
+  }
   /** How much of a road has finished drawing itself in. */
   private visibleSamples(edge: RoadEdge, shape: EdgeShape): number {
     if (edge.buildProgress >= 1) return shape.samples.length;

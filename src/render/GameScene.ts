@@ -1,14 +1,17 @@
 import Phaser from 'phaser';
 import { RoadDrawing } from '../input/RoadDrawing';
-import { createWorldConfig, randomSeed } from '../sim/map';
+
+import type { ResourceNode } from '../sim/resourceNode';
 import type { Site } from '../sim/roadNetwork';
-import { World } from '../sim/world';
+import { World, type WorldConfig } from '../sim/world';
 import { Hud } from '../ui/Hud';
 import { SpeedControl } from '../ui/SpeedControl';
 import { CameraController } from './CameraController';
 import { DebugLayer } from './DebugLayer';
+import { FrontierLayer } from './FrontierLayer';
 import { FxLayer } from './FxLayer';
 import { InfluenceLayer } from './InfluenceLayer';
+import { RiverLayer } from './RiverLayer';
 import { RoadLayer } from './RoadLayer';
 import { SettlementLayer } from './SettlementLayer';
 import { SettlementPotentialLayer } from './SettlementPotentialLayer';
@@ -24,8 +27,10 @@ export class GameScene extends Phaser.Scene {
   private world!: World;
   private camera!: CameraController;
   private terrainLayer!: TerrainLayer;
+  private riverLayer!: RiverLayer;
   private influence!: InfluenceLayer;
   private settlementPotential!: SettlementPotentialLayer;
+  private frontier!: FrontierLayer;
   private roads!: RoadLayer;
   private sites!: SiteLayer;
   private settlements!: SettlementLayer;
@@ -43,20 +48,29 @@ export class GameScene extends Phaser.Scene {
   /** Where on the network the cursor is, when it is over a road. */
   private hoveredRoadPoint: { x: number; y: number } | null = null;
 
-  constructor() {
+  /**
+   * The world is handed in already built, rather than constructed here.
+   * `main.ts` owns that choice because an authored map has to be fetched
+   * first — see the note there.
+   */
+  constructor(private readonly config: WorldConfig) {
     super('game');
   }
 
   create(): void {
-    this.world = new World(createWorldConfig(resolveSeed()));
-    // eslint-disable-next-line no-console
-    console.log(`Via Lucrum — world seed ${this.world.seed} (append ?seed=${this.world.seed} to reproduce this map)`);
+    this.world = new World(this.config);
+    // A handle on the simulation while developing, so the world can be poked
+    // and inspected from the browser console. Stripped from a production
+    // build by the bundler along with the branch itself.
+    if (import.meta.env.DEV) (window as unknown as { world: World }).world = this.world;
 
     this.terrainLayer = new TerrainLayer(this, this.world);
+    this.riverLayer = new RiverLayer(this, this.world);
     this.influence = new InfluenceLayer(this, this.world);
     this.settlementPotential = new SettlementPotentialLayer(this, this.world);
     this.roads = new RoadLayer(this, this.world);
     this.sites = new SiteLayer(this, this.world);
+    this.frontier = new FrontierLayer(this, this.world);
     this.settlements = new SettlementLayer(this, this.world);
     this.villagers = new VillagerLayer(this, this.world);
     this.fx = new FxLayer(this);
@@ -98,10 +112,12 @@ export class GameScene extends Phaser.Scene {
 
     this.camera.update(dt);
     this.terrainLayer.update();
-    this.influence.update(dt);
+    this.riverLayer.update(this.cameras.main);
+    this.influence.update(dt, this.cameras.main.zoom);
     this.settlementPotential.update(dt);
     this.roads.update(dt);
     this.sites.update(dt);
+    this.frontier.update(dt);
     this.settlements.update(dt);
     this.villagers.update(dt);
     this.debug.update();
@@ -109,6 +125,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   // ------------------------------------------------------------------ input
+
+  /** The frontier offer under a point, if any — generous, since markers are small. */
+  private frontierAt(point: { x: number; y: number }): ResourceNode | null {
+    for (const candidate of this.world.frontier) {
+      const d = Math.hypot(candidate.node.position.x - point.x, candidate.node.position.y - point.y);
+      if (d <= candidate.node.radius + 14) return candidate.node;
+    }
+    return null;
+  }
 
   private worldPoint(pointer: Phaser.Input.Pointer): { x: number; y: number } {
     const p = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
@@ -121,6 +146,17 @@ export class GameScene extends Phaser.Scene {
     if (pointer.rightButtonDown()) {
       this.erasing = true;
       this.world.eraseRoadAt(point);
+      return;
+    }
+
+    // A frontier marker is not connectable, so it can never start a road —
+    // clicking one selects it instead, and the selection has to *stick*: the
+    // Claim button lives in the panel across the screen, and the player has
+    // to be able to move the cursor off the marker to reach it without the
+    // panel closing behind them.
+    const frontier = this.frontierAt(point);
+    if (frontier) {
+      this.selected = frontier;
       return;
     }
 
@@ -139,6 +175,7 @@ export class GameScene extends Phaser.Scene {
 
     this.hovered = this.world.siteAt(point);
     this.sites.setHovered(this.hovered);
+    this.frontier.setHovered(this.frontierAt(point));
     this.settlements.setHovered(this.hovered);
 
     if (this.erasing && pointer.rightButtonDown()) {
@@ -201,20 +238,4 @@ export class GameScene extends Phaser.Scene {
     const canvas = this.input.manager.canvas;
     if (canvas.style.cursor !== cursor) canvas.style.cursor = cursor;
   }
-}
-
-/**
- * `?seed=12345` reproduces an exact world — point 23 of the brief, and the
- * whole reason `WorldGenerator` is a pure function of one number in the
- * first place. Anything else (missing, non-numeric) falls back to a fresh
- * random one; the seed actually used is always logged to the console either
- * way, so a map worth coming back to is never lost.
- */
-function resolveSeed(): number {
-  const fromUrl = new URLSearchParams(window.location.search).get('seed');
-  if (fromUrl !== null) {
-    const parsed = Number(fromUrl);
-    if (Number.isFinite(parsed)) return Math.floor(parsed);
-  }
-  return randomSeed();
 }

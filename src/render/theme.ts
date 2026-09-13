@@ -168,6 +168,16 @@ export const TRADE_COLORS: Record<string, number> = {
 
 export const DEPTH = {
   terrain: 0,
+  // Under the canopy, not over it. A river drawn on top of the trees is
+  // drawn on top of the *map* — the eye reads anything that occludes the
+  // scenery as an annotation of it rather than as part of it, which is most
+  // of why the first version looked stuck on. Trees on the bank overlapping
+  // the water is what puts the water into the landscape.
+  rivers: 0.5,
+  // The ripple hatching sits on the water and under everything that stands on
+  // the bank, same as the water itself.
+  waterPattern: 0.6,
+  vegetation: 1,
   debugGrid: 2,
   influence: 5,
   settlementPotential: 7,

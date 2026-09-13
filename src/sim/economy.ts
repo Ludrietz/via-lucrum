@@ -19,24 +19,52 @@ export type TradeSource = ResourceNode | Trader;
 export type Destination = Trader | ResourceNode;
 
 /**
- * Stock burned per resident per second, quietly, whether or not it is
- * watched. Raw goods keep this switched off in practice (see `consume`'s
- * doc comment below and `decayExcessStorage`, which does the real "storage
- * can't grow forever" work for them) — but processed goods genuinely do get
- * used up in daily life, which is what gives them an ongoing reason to keep
- * being made rather than a one-time shelf-fill. See `consumeProcessedGoods`.
+ * What one resident gets through in a minute. **The** per-capita number:
+ * demand, the stock a place wants to keep, how many people a food supply can
+ * feed, and what actually comes off the shelf are all read from this one
+ * table, so they cannot disagree.
+ *
+ * They used to. There were two tables — this one, and a separate
+ * `CONSUMPTION_PER_CAPITA` at roughly double these rates — and the second
+ * was switched off for raw goods because at that inflated rate it drained
+ * faster than production could keep up. Switching it off is what produced
+ * the single worst economic bug in the game: raw food was never taken off a
+ * shelf by anything, so the moment a trader's larder filled to its target,
+ * `shortage(food)` read zero *permanently*. Food then never scored as
+ * something worth shipping, the trade system quietly stopped carrying it
+ * altogether in favour of iron and stone, and population — which reads the
+ * delivery *rate*, not the shelf — starved beside a full granary that
+ * nothing was ever going to empty. Measured over 150 days, the civilisation
+ * sat at 44 people against a sustainable 30 with every larder comfortably
+ * "stocked".
+ *
+ * People eat. Making that literally true is what puts food back in the trade
+ * system's sights and keeps the shelf and the flow telling the same story.
  */
-export const CONSUMPTION_PER_CAPITA: Record<ResourceType, number> = {
-  [ResourceType.Food]: 0.02,
-  [ResourceType.Wood]: 0.01,
-  [ResourceType.Iron]: 0.004,
-  [ResourceType.Stone]: 0.004,
-  [ResourceType.Planks]: 0.01,
-  [ResourceType.StoneBlocks]: 0.01,
-  [ResourceType.Tools]: 0.005,
+export const DEMAND_PER_CAPITA_PER_MIN: Record<ResourceType, number> = {
+  [ResourceType.Food]: 0.5,
+  [ResourceType.Wood]: 0.3,
+  [ResourceType.Iron]: 0.1,
+  [ResourceType.Stone]: 0.1,
+  // Close to parity with the raw goods on purpose: a settlement's need for
+  // planks and tools has to keep growing with its population the same way
+  // its need for wood and food does, or a growing population always wins
+  // the same priority race against industries (see `WorkforceSystem.post`,
+  // which weighs every opening by demand) — industries would satisfy their
+  // one small target once and then never be worth staffing again, and
+  // wealth income (which depends on them) would crater as population grew,
+  // not scale with it.
+  [ResourceType.Planks]: 0.25,
+  [ResourceType.StoneBlocks]: 0.25,
+  [ResourceType.Tools]: 0.12,
 };
 
-/** The three goods that actually get consumed today — see `consumeProcessedGoods`. */
+/** The same figure per second, which is the rate `consume` actually applies. */
+export const CONSUMPTION_PER_CAPITA: Record<ResourceType, number> = Object.fromEntries(
+  Object.entries(DEMAND_PER_CAPITA_PER_MIN).map(([resource, perMin]) => [resource, perMin / 60]),
+) as Record<ResourceType, number>;
+
+/** Goods an industry makes rather than the ground — kept for the places that treat them differently. */
 export const PROCESSED_GOODS: readonly ResourceType[] = [
   ResourceType.Planks,
   ResourceType.StoneBlocks,
@@ -200,27 +228,19 @@ export function withdraw(trader: Trader, resource: ResourceType, amount: number)
 }
 
 /**
- * Quiet upkeep: every place slowly eats into its own stock. Kept around but
- * unused for raw goods — tried and reverted (see `decayExcessStorage`'s
- * comment): at today's population scale it drains raw goods faster than
- * production keeps up, starving development instead of merely keeping
- * storage honest.
+ * People eat, burn firewood, wear out tools. Every tracked good — raw and
+ * processed alike — comes off the shelf at exactly the rate the same place's
+ * demand is quoted at, which is what keeps `shortage` a live reading of how
+ * a place is actually doing rather than a high-water mark it reached once.
+ *
+ * This is the counterpart to `targetStock`: a place wants
+ * `TARGET_BUFFER_MINUTES` of demand on hand, and burns that demand down, so
+ * a shelf holds steady exactly when deliveries keep pace and slides when
+ * they don't. Nothing else in the economy has to be told a place is
+ * struggling; the shelf says so.
  */
 export function consume(trader: Trader, dt: number): void {
   for (const resource of TRACKED_GOODS) {
-    const use = CONSUMPTION_PER_CAPITA[resource] * trader.population * dt;
-    trader.storage[resource] = Math.max(0, trader.storage[resource] - use);
-  }
-}
-
-/**
- * The one place `CONSUMPTION_PER_CAPITA` is actually applied: planks, stone
- * blocks and tools get used up in ordinary life (upkeep, wear, repairs), so
- * unlike raw goods they need a standing reason to keep being made rather
- * than a single shelf-fill that then sits there forever.
- */
-export function consumeProcessedGoods(trader: Trader, dt: number): void {
-  for (const resource of PROCESSED_GOODS) {
     const use = CONSUMPTION_PER_CAPITA[resource] * trader.population * dt;
     trader.storage[resource] = Math.max(0, trader.storage[resource] - use);
   }
@@ -267,29 +287,6 @@ export function emptyAmounts(): Record<ResourceType, number> {
  * competition for deliveries resumes.
  */
 const THROUGHPUT_TAU = 180;
-/**
- * What one resident gets through in a minute, at a comfortable level — the
- * demand figure shown in the UI, and (for food) what population support is
- * measured against. Separate from `CONSUMPTION_PER_CAPITA` above, which is
- * the actual stock-draining rate and is currently switched off.
- */
-export const DEMAND_PER_CAPITA_PER_MIN: Record<ResourceType, number> = {
-  [ResourceType.Food]: 0.5,
-  [ResourceType.Wood]: 0.3,
-  [ResourceType.Iron]: 0.1,
-  [ResourceType.Stone]: 0.1,
-  // Close to parity with the raw goods on purpose: a settlement's need for
-  // planks and tools has to keep growing with its population the same way
-  // its need for wood and food does, or a growing population always wins
-  // the same priority race against industries (see `WorkforceSystem.post`,
-  // which weighs every opening by demand) — industries would satisfy their
-  // one small target once and then never be worth staffing again, and
-  // wealth income (which depends on them) would crater as population grew,
-  // not scale with it.
-  [ResourceType.Planks]: 0.25,
-  [ResourceType.StoneBlocks]: 0.25,
-  [ResourceType.Tools]: 0.12,
-};
 /** Seconds for population to close most of the way to its sustainable size. */
 const POPULATION_TIME_CONSTANT = 100;
 
@@ -319,10 +316,75 @@ export function throughputPerMin(trader: Trader, resource: ResourceType): number
   return (trader.throughput[resource] / THROUGHPUT_TAU) * 60;
 }
 
-/** How many residents the food actually arriving here could feed. */
+/**
+ * How many residents what is actually arriving here could support — the
+ * lower of what the grain feeds and what the firewood keeps warm.
+ *
+ * Food alone was the whole of this, and it let population run away from
+ * every other part of the economy. Farmland is the commonest ground on any
+ * map, so food sites outnumber woodland better than two to one; population
+ * therefore grew on grain until it was three times what the forests could
+ * supply. Wood sat at maximum shortage permanently, which starved node
+ * investment and left every industry with nothing to work, which meant no
+ * wealth, no development, and — measured at two hundred and thirty
+ * residents — eighty people standing idle with nothing in the civilisation
+ * for them to do. A population is not fed by grain alone, and pretending
+ * otherwise doesn't make the timber appear.
+ *
+ * The same "whichever ladder is behind" shape `nodeLevel` uses for a node's
+ * level and `tier` uses for a place's rung. Deliberately only the
+ * necessities: stone and iron are what a civilisation builds and arms
+ * itself with, not what it survives on, and gating headcount on them would
+ * make an ordinary poor-in-ore seed unliveable rather than merely modest.
+ */
 export function sustainablePopulation(trader: Trader): number {
-  return Math.max(0, throughputPerMin(trader, ResourceType.Food) / DEMAND_PER_CAPITA_PER_MIN[ResourceType.Food]);
+  return supportedBy([trader]);
 }
+
+/**
+ * The same reading for the whole civilisation — and it has to be computed
+ * this way round, not by adding up each place's own answer.
+ *
+ * Summing per-place minimums asks every settlement to be independently
+ * self-sufficient in both necessities, which is precisely what a trade
+ * network exists to make unnecessary: a timber hamlet legitimately grows no
+ * food, and a farming one legitimately cuts no wood. Adding their minimums
+ * gives zero for both and reports a starving civilisation sitting on a
+ * surplus of everything. Taking the minimum of the *totals* asks the
+ * question that actually matters — is enough of each thing arriving,
+ * anywhere, for the people there are — and leaves distributing it to the
+ * trade system, which is its job.
+ */
+export function sustainablePopulationAcross(traders: readonly Trader[]): number {
+  return supportedBy(traders);
+}
+
+function supportedBy(traders: readonly Trader[]): number {
+  let supported = Infinity;
+  for (const resource of NECESSITIES) supported = Math.min(supported, supportedByResource(traders, resource));
+  return Math.max(0, supported);
+}
+
+/**
+ * How many residents the arrivals of *one* good could support, on its own.
+ *
+ * Kept separate from the combined reading above because the labour market
+ * needs to know **which** necessity is short, not merely that one of them is.
+ * Feeding the combined figure into food's famine bonus produced a genuine
+ * deadlock: a *timber* famine drove the combined number to zero, which
+ * maxed out the *food* bonus, so every spare hand was sent to a farm, so no
+ * forest was ever staffed, so the timber famine never ended. A civilisation
+ * of three sat like that for a hundred and twenty days with forty-four
+ * connected deposits and a full granary.
+ */
+export function supportedByResource(traders: readonly Trader[], resource: ResourceType): number {
+  let arriving = 0;
+  for (const trader of traders) arriving += throughputPerMin(trader, resource);
+  return arriving / DEMAND_PER_CAPITA_PER_MIN[resource];
+}
+
+/** What a population cannot do without: it eats, and it burns and builds with timber. */
+const NECESSITIES: readonly ResourceType[] = [ResourceType.Food, ResourceType.Wood];
 
 /**
  * A rough single number for how alive a place's trade is: everything it is
