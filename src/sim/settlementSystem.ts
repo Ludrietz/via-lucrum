@@ -1,9 +1,9 @@
 import { dist, type Vec2 } from './geometry';
+import { TERRAIN_SUITABILITY } from './landUse';
 import type { ResourceNode } from './resourceNode';
 import type { RoadNetwork } from './roadNetwork';
 import { Settlement, SettlementStage, stageFor, tradeFor, type Trade } from './settlement';
 import type { TerrainSource } from './source';
-import { TerrainType } from './terrain';
 import { dominantGood, WEAR_FULL, type TrafficField } from './traffic';
 import { ResourceType } from './types';
 import type { Village } from './village';
@@ -24,6 +24,14 @@ export interface SettlementContext {
   population: number;
   /** Whether the realm actually holds this ground — see `tryFound`. */
   held(point: Vec2): boolean;
+  /**
+   * How much free, settleable country surrounds a point, 0 to 1 — see
+   * `landUse.ts`'s `surveyGround`. Asked of every candidate patch, so `World`
+   * memoises it on a coarse grid.
+   */
+  room(point: Vec2): number;
+  /** Whether another place is already built over this ground — see `tryFound`. */
+  occupied(point: Vec2): boolean;
   hours: number;
   found(patch: number, position: Vec2, trade: Trade, potential: number, origin: Origin): void;
 }
@@ -54,12 +62,24 @@ export const SETTLEMENT_TUNING = {
 
   /** Contributions, before crowding is applied. These sum to 1. */
   weights: {
-    traffic: 0.34,
-    quality: 0.15,
-    junction: 0.19,
-    resources: 0.14,
-    terrain: 0.18,
+    traffic: 0.3,
+    quality: 0.12,
+    junction: 0.17,
+    resources: 0.13,
+    terrain: 0.12,
+    room: 0.16,
   },
+
+  /**
+   * How far a prospective place looks when it asks whether there is anywhere
+   * to grow. Wider than a hamlet will ever need on purpose — the question is
+   * not "can we put the first dozen huts down", which almost anywhere passes,
+   * but "is this somewhere that could one day be a town", which is exactly
+   * the judgement a founder makes and exactly what `terrain` alone (one cell,
+   * underfoot) could never answer. Roughly the footprint of a place of two
+   * hundred, at `landUse.ts`'s acreage.
+   */
+  roomRadius: 520,
 
   /** A junction this close counts fully; further away it tails off. */
   junctionRadius: 150,
@@ -106,15 +126,6 @@ export const SETTLEMENT_TUNING = {
  * triple what the comment above says it should.
  */
 const POPULATION_PER_PLACE = 9;
-
-/** How willingly each kind of ground is built on. */
-const TERRAIN_SUITABILITY: Record<TerrainType, number> = {
-  [TerrainType.Plains]: 1,
-  [TerrainType.Forest]: 0.62,
-  [TerrainType.Hills]: 0.34,
-  [TerrainType.Mountains]: 0,
-  [TerrainType.Water]: 0,
-};
 
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
 
@@ -230,7 +241,10 @@ export class SettlementSystem {
 
     // Resource sites are not building land, however good the road past them is.
     if (this.onTopOfResource(position, ctx)) {
-      return { score: 0, parts: { traffic: 0, quality: 0, junction: 0, resources: 0, terrain: 0, crowding: 0, goods: 0 } };
+      return {
+        score: 0,
+        parts: { traffic: 0, quality: 0, junction: 0, resources: 0, terrain: 0, room: 0, crowding: 0, goods: 0 },
+      };
     }
 
     const goods = ctx.traffic.totalGoodsAtIndex(patch);
@@ -239,6 +253,15 @@ export class SettlementSystem {
     const junction = this.junctionImportance(position, ctx);
     const resources = this.resourceProximity(position, ctx);
     const terrain = TERRAIN_SUITABILITY[ctx.terrain.typeAt(position)] ?? 0;
+    // Somewhere to grow into, which is a different question from what is
+    // underfoot: a crossroads on a good acre wedged between a mountain, a
+    // lake and three working woods has a perfect `terrain` and no future.
+    // This is what makes the map's open country worth settling and tells the
+    // busy-but-boxed-in spot apart from the busy-and-open one — and, since
+    // the same reading later decides how urban the place becomes, a
+    // settlement founded with room around it is a settlement that can
+    // actually take it.
+    const room = ctx.room(position);
     const crowding = this.crowding(position, ctx, self);
 
     const raw =
@@ -246,9 +269,10 @@ export class SettlementSystem {
       w.quality * quality +
       w.junction * junction +
       w.resources * resources +
-      w.terrain * terrain;
+      w.terrain * terrain +
+      w.room * room;
 
-    const parts = { traffic, quality, junction, resources, terrain, crowding, goods };
+    const parts = { traffic, quality, junction, resources, terrain, room, crowding, goods };
     return { score: clamp01(raw) * crowding * (terrain > 0 ? 1 : 0), parts };
   }
 
@@ -395,6 +419,23 @@ export class SettlementSystem {
     // ground a couple of hundred units away, and the traffic that made it a
     // candidate runs through that ground too.
     if (!ctx.held(position)) return;
+
+    // And not on ground somebody else's town is already standing on.
+    //
+    // `crowding` looks like it covers this and does not quite: it measures
+    // from a neighbour's *centre* at a fixed 360 units, while a place's
+    // sprawl grows with its population and passes that figure somewhere
+    // around a hundred residents. A settlement founded inside a big
+    // neighbour's fields would be born with nowhere to put a single house —
+    // every cell around it already held, and settled ground is the one thing
+    // nothing may take (see `LandRegistry.canClaim`) — so it would open
+    // starved, never build housing, and sit at the development floor forever.
+    // That is the 0-population settlement failure arriving by a new road.
+    //
+    // Categorical rather than a penalty, exactly like "nothing may take hold
+    // on top of a resource site" above, and for the same reason: this is not
+    // a matter of degree.
+    if (ctx.occupied(position)) return;
 
     // `resources` alone counts a claimed-but-unstaffed site exactly the same
     // as a busy one — it only asks "is there ground worth working nearby",

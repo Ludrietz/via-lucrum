@@ -8,8 +8,10 @@
  */
 
 import { shortage, sustainablePopulation, throughputPerMin, wealthIncomePerMin } from '../src/sim/economy';
-import { housingCapacity } from '../src/sim/housing';
+import { hasRoomToBuild, housingCapacity } from '../src/sim/housing';
+import { urbanityLabel } from '../src/sim/landUse';
 import { createWorldConfig } from '../src/sim/map';
+import { METRES_PER_UNIT } from '../src/sim/scale';
 import { TIER_LABELS } from '../src/sim/tier';
 import { ResourceType, VillagerRole } from '../src/sim/types';
 import { World, type WorldConfig } from '../src/sim/world';
@@ -44,7 +46,6 @@ export interface Snapshot {
   workers: number;
   transporters: number;
   idle: number;
-  dependents: number;
   settlements: number;
   connectedNodes: number;
   visibleNodes: number;
@@ -89,8 +90,7 @@ export function snapshot(world: World): Snapshot {
     populationTarget: world.populationTarget,
     workers: villagers.filter((v) => v.role === VillagerRole.Worker).length,
     transporters: villagers.filter((v) => v.role === VillagerRole.Transporter).length,
-    idle: villagers.filter((v) => v.role === VillagerRole.Idle && !v.isDependent).length,
-    dependents: villagers.filter((v) => v.isDependent).length,
+    idle: villagers.filter((v) => v.role === VillagerRole.Idle).length,
     settlements: world.settlements.length,
     connectedNodes: connected.length,
     visibleNodes: world.visibleNodes.length,
@@ -159,14 +159,14 @@ export function printTimeline(timeline: Snapshot[]): void {
   // eslint-disable-next-line no-console
   const log = console.log;
   log(
-    ' day  pop (tgt)  wrk trn idl dep | setl | cap  +/min ofr | nodes clm/con/op lvl | roads len   junc | ind | wealth  inc | food/min shortages f/w/s/i/T',
+    ' day  pop (tgt)  wrk trn idl | setl | cap  +/min ofr | nodes clm/con/op lvl | roads len   junc | ind | wealth  inc | food/min shortages f/w/s/i/T',
   );
   for (const s of timeline) {
     log(
       `${pad(s.day, 4)} ${pad(s.population, 4)} (${pad(f1(s.populationTarget), 5)}) ${pad(s.workers, 3)} ${pad(
         s.transporters,
         3,
-      )} ${pad(s.idle, 3)} ${pad(s.dependents, 3)} | ${pad(s.settlements, 4)} | ${pad(f1(s.capacity), 5)} ${pad(f1(s.capacityRate), 5)} ${pad(s.offers, 3)} | ${pad(s.claimed, 5)}/${pad(
+      )} ${pad(s.idle, 3)} | ${pad(s.settlements, 4)} | ${pad(f1(s.capacity), 5)} ${pad(f1(s.capacityRate), 5)} ${pad(s.offers, 3)} | ${pad(s.claimed, 5)}/${pad(
         s.connectedNodes,
         3,
       )}/${pad(s.operationalNodes, 3)} ${f1(s.meanNodeLevel)} | ${pad(s.roadEdges, 5)} ${pad(
@@ -209,6 +209,54 @@ export function printPlaces(world: World): void {
     );
   }
   log(`  civ sustainable population: ${f1(world.traders.reduce((s, t) => s + sustainablePopulation(t), 0))}`);
+  printLand(world);
+}
+
+/**
+ * What each place has managed to take of the country around it, and what that
+ * has made of it.
+ *
+ * Its own block rather than four more columns on `PLACES`, because these are
+ * the numbers you read when asking a different question: not "is this place
+ * doing well" but "is this place a village or a town, and did the map decide
+ * that or did we". `hemmed` is the one to watch — a place stuck there is a
+ * place whose housing has stopped growing, which is the intended brake and
+ * also exactly where an unintended deadlock would show up first.
+ */
+function printLand(world: World): void {
+  // eslint-disable-next-line no-console
+  const log = console.log;
+  const cell = world.terrain.cellSize;
+  log('\n  LAND               held/want ha   room  build  works   urbanity  kind    industry hands');
+  for (const trader of world.traders) {
+    const held = hectares(trader.ground.area(cell));
+    const want = hectares(trader.ground.targetArea);
+    const hands = trader.industries.reduce((sum, i) => sum + i.workerCapacity, 0);
+    const hemmed = hasRoomToBuild(trader) ? '' : ' NO ROOM';
+    log(
+      `  ${trader.name.padEnd(17)} ${pad(held, 5)}/${pad(want, 5)} ha ${pad(
+        Math.round(trader.hinterland.openness * 100),
+        5,
+      )}% ${pad(Math.round(trader.hinterland.buildable * 100), 4)}% ${pad(
+        Math.round(trader.hinterland.worked * 100),
+        5,
+      )}% ${pad(f1(trader.urbanity * 100), 8)}% ${urbanityLabel(trader.urbanity).padEnd(7)} ${pad(hands, 3)}${hemmed}`,
+    );
+  }
+
+  const claimed = world.nodes.filter((n) => n.isClaimed && !n.ground.isEmpty);
+  const squeezed = claimed.filter((n) => n.groundQuality < 0.97);
+  log(
+    `  works holding ground: ${claimed.length}, of which ${squeezed.length} built over` +
+      (squeezed.length > 0
+        ? ` (mean yield ${f1((squeezed.reduce((s, n) => s + n.groundQuality, 0) / squeezed.length) * 100)}%)`
+        : ''),
+  );
+}
+
+/** World units² as hectares, at `scale.ts`'s four metres to the unit. */
+function hectares(areaInUnits: number): number {
+  return Math.round((areaInUnits * METRES_PER_UNIT * METRES_PER_UNIT) / 10_000);
 }
 
 export function printNodes(world: World): void {
@@ -216,7 +264,7 @@ export function printNodes(world: World): void {
   const log = console.log;
   const connected = world.nodes.filter((n) => n.isConnected);
   log(`\nNODES  (${world.nodes.length} generated, ${world.visibleNodes.length} visible, ${connected.length} connected)`);
-  log('  name                    res     lvl  wkrs  stored  lifetime  invested/next  state');
+  log('  name                    res     lvl  wkrs  stored  lifetime  invested/next  yld  state');
   for (const node of connected.sort((a, b) => b.cumulativeCollected - a.cumulativeCollected)) {
     log(
       `  ${node.name.padEnd(23)} ${node.resource.padEnd(7)} ${pad(node.level, 3)} ${pad(node.workers.length, 5)}/${
@@ -224,7 +272,7 @@ export function printNodes(world: World): void {
       } ${pad(Math.round(node.stored), 6)} ${pad(Math.round(node.cumulativeCollected), 9)} ${pad(
         Math.round(node.investedResource),
         8,
-      )}/${node.investmentProgress.next ?? '-'}  ${node.state}`,
+      )}/${node.investmentProgress.next ?? '-'}  ${pad(Math.round(node.groundQuality * 100), 3)}%  ${node.state}`,
     );
   }
   const byResource = new Map<string, number>();

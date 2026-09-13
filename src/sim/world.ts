@@ -14,7 +14,16 @@ import { advanceDevelopment } from './development';
 import { dist, type Vec2 } from './geometry';
 import { advanceHousing, housingCapacity } from './housing';
 import type { Industry } from './industry';
-import { ResourceNode } from './resourceNode';
+import {
+  hinterlandRadius,
+  roomScore,
+  LandRegistry,
+  settledAreaFor,
+  surveyGround,
+  urbanityFor,
+  type LandContext,
+} from './landUse';
+import { MIN_GROUND_QUALITY, ResourceNode } from './resourceNode';
 import { RoadNetwork, type Anchor, type RoadEdge, type Route, type Site } from './roadNetwork';
 import { HOURS_PER_DAY } from './scale';
 import type { NodeSource, TerrainSource } from './source';
@@ -33,12 +42,18 @@ import {
   type FrontierCandidate,
 } from './expansion';
 import { Settlement, stageFor, tradeFor, type Trade } from './settlement';
-import { SettlementSystem, type Candidate, type Origin, type SettlementContext } from './settlementSystem';
+import {
+  SettlementSystem,
+  SETTLEMENT_TUNING,
+  type Candidate,
+  type Origin,
+  type SettlementContext,
+} from './settlementSystem';
 import { IndustrySystem, MigrationSystem, nearestTrader, TransportSystem, WorkforceSystem, type SimContext } from './systems';
 import { Tier, tierIndex } from './tier';
 import { NodeState, ResourceType, VillagerRole, type WorldEvent } from './types';
 import { Village } from './village';
-import { Villager, WORKING_POPULATION_SHARE } from './villager';
+import { Villager } from './villager';
 import { WorkerDeliverySystem } from './workerDelivery';
 
 /** Seconds a drawn road takes to finish drawing itself in. */
@@ -83,6 +98,31 @@ const GENERATION_CHECK_INTERVAL = 3;
  * same two minutes that reserve was sized to cover.
  */
 const FOUNDING_GRACE_SECONDS = 120;
+
+/**
+ * How often ground gets laid out, and how many cells any one claimant may
+ * take in a pass — see `landUse.ts`.
+ *
+ * Slow on purpose. A parcel is not a shape recomputed from a radius; it is
+ * ground being cleared, walled and ploughed, and it should read that way on
+ * the map: a town visibly creeps up its valley over a day or two rather than
+ * arriving at its full extent the tick its population ticks over. At these
+ * numbers a claimant takes six cells a second, so a hamlet lays out its first
+ * fifty-odd cells in about nine seconds and a mature works its two hundred in
+ * half a minute — both comfortably slower than the population or level change
+ * that asked for them.
+ *
+ * It is also what keeps this cheap. A parcel that already holds what it wants
+ * does no work at all, so the steady state — which is nearly all of the time —
+ * costs nothing, and only places that are actually growing pay.
+ */
+const LAND_INTERVAL = 0.5;
+const LAND_CELLS_PER_PASS = 3;
+
+/** How coarsely `roomAt` answers are shared between nearby candidate patches. */
+const ROOM_CACHE_CELL = 64;
+/** Seconds a cached `roomAt` answer is good for. */
+const ROOM_CACHE_SECONDS = 25;
 
 export interface WorldConfig {
   width: number;
@@ -152,6 +192,13 @@ export class World {
    * only when something is deliberately incorporated, never on its own.
    */
   readonly territory = new Territory();
+
+  /**
+   * Who holds which patch of ground. The territory says what the *realm*
+   * owns; this says what each village and each works actually occupies inside
+   * it, one cell to one claimant — see `landUse.ts`.
+   */
+  readonly land = new LandRegistry();
   /**
    * Unspent Expansion Capacity. Earned by the civilisation doing well (see
    * `expansion.ts`), spent by the player on frontier claims, and the one
@@ -178,21 +225,11 @@ export class World {
   private pruneTimer = 0;
   private wearRefreshTimer = 0;
   private generationTimer = 0;
+  private landTimer = 0;
+  private readonly roomCache = new Map<number, { value: number; hours: number }>();
   private villageTier: Tier;
   private readonly settlementTiers = new Map<number, Tier>();
   private readonly nodeLevels = new Map<number, number>();
-  /**
-   * How many dependents the population currently owes itself, or has too
-   * many of (negative). A shrink event can only ever safely remove whoever
-   * is actually free (see `reconcilePopulation`), which is almost always a
-   * dependent — there's rarely a genuinely idle non-dependent to take
-   * instead — so every shrink that wanted to take a non-dependent but
-   * couldn't banks the difference here, and `addVillager` leans the other
-   * way at the next few births until it's paid back. Corrects the same
-   * long-run drift a forced mid-job removal would, without ever touching
-   * someone who's actually working.
-   */
-  private dependentDebt = 0;
   /** Ground the civilisation has uncovered, by chunk — what the renderer is allowed to draw. See `uncoverGround`. */
   private readonly uncoveredChunks = new Set<string>();
   private freshlyUncovered: Array<{ cx: number; cy: number }> = [];
@@ -642,14 +679,8 @@ export class World {
     return this.villagersAt(trader).filter((v) => v.role === VillagerRole.Transporter).length;
   }
 
-  /** Idle *and* actually available — a dependent can be idle forever without ever counting here. */
   idleCountAt(trader: Trader): number {
-    return this.villagersAt(trader).filter((v) => v.isAvailable).length;
-  }
-
-  /** Labour capacity: everyone who isn't a dependent, whether currently employed or not. */
-  workingPopulationAt(trader: Trader): number {
-    return this.villagersAt(trader).filter((v) => !v.isDependent).length;
+    return this.villagersAt(trader).filter((v) => v.isFree).length;
   }
 
   routeTo(node: ResourceNode): Route | null {
@@ -780,6 +811,15 @@ export class World {
       this.expandGeneration();
     }
 
+    // Before anything that reads a yield or a worker capacity this tick:
+    // whose ground is whose is an input to production, housing and industry,
+    // not a readout of them.
+    this.landTimer += dt;
+    if (this.landTimer >= LAND_INTERVAL) {
+      this.landTimer = 0;
+      this.advanceLandUse();
+    }
+
     const ctx = this.context();
     this.workforce.update(dt, ctx);
     this.industry.update(dt, ctx);
@@ -847,6 +887,82 @@ export class World {
    * a ceiling would quietly turn that into "spend it or waste it", which is
    * the opposite of the decision this system exists to create.
    */
+  /** What the land system needs, and all it is allowed to touch. */
+  private landContext(): LandContext {
+    return { terrain: this.terrain, registry: this.land };
+  }
+
+  /**
+   * Ground gets laid out, and everything downstream of who holds what is
+   * brought up to date.
+   *
+   * The order is deliberate and is the one asymmetry the whole system rests
+   * on. Works take their ground first, so a deposit opened in empty country
+   * gets the run of it; settlements take theirs second, and a settlement is
+   * the one claimant allowed to take ground off a works (see
+   * `LandRegistry.canClaim`). So the sequence reads exactly as it should: the
+   * wood is there, the village grows, and if the village has nowhere better
+   * to grow than into the wood, it does — and the wood is worth less for it.
+   * Nothing anywhere says "a town may not expand"; it simply costs what it
+   * would really cost.
+   */
+  private advanceLandUse(): void {
+    const ctx = this.landContext();
+
+    for (const node of this.nodes) {
+      // Claiming is not exploiting, and it is not occupying either: a
+      // deposit beyond the border works no ground, which means a town inside
+      // the border can quietly sprawl over country a frontier site would one
+      // day want. That is a real consequence of leaving an offer on the
+      // table, not an oversight.
+      if (!node.isClaimed) continue;
+      node.ground.targetArea = node.workedArea;
+      node.ground.grow(ctx, LAND_CELLS_PER_PASS);
+      node.groundQuality = Math.max(MIN_GROUND_QUALITY, node.ground.quality(this.terrain.cellSize));
+    }
+
+    for (const trader of this.traders) {
+      trader.ground.targetArea = settledAreaFor(trader.population);
+      trader.ground.grow(ctx, LAND_CELLS_PER_PASS);
+    }
+
+    for (const trader of this.traders) {
+      const survey = surveyGround(
+        trader.position,
+        hinterlandRadius(trader.ground.targetArea),
+        ctx,
+        trader.ground,
+      );
+      trader.hinterland = survey;
+      trader.roomSatisfaction = trader.ground.satisfaction(this.terrain.cellSize);
+      trader.urbanity = urbanityFor(survey, trader.roomSatisfaction);
+    }
+  }
+
+  /**
+   * How much free, settleable country surrounds a point.
+   *
+   * Memoised on a coarse grid because the settlement scan asks this of every
+   * busy patch on the network, and patches are far finer than the question
+   * is: two spots sixty units apart survey almost exactly the same
+   * neighbourhood. The entry expires rather than being invalidated — ground
+   * changes hands slowly, and a reading half a minute stale feeds a soft
+   * weight, not a gate.
+   */
+  roomAt(point: Vec2): number {
+    const col = Math.floor(point.x / ROOM_CACHE_CELL);
+    const row = Math.floor(point.y / ROOM_CACHE_CELL);
+    const key = (col + 65536) * 131072 + (row + 65536);
+
+    const cached = this.roomCache.get(key);
+    if (cached && this.hours - cached.hours < ROOM_CACHE_SECONDS) return cached.value;
+
+    const value = roomScore(surveyGround(point, SETTLEMENT_TUNING.roomRadius, this.landContext()).openness);
+    if (this.roomCache.size > 4000) this.roomCache.clear();
+    this.roomCache.set(key, { value, hours: this.hours });
+    return value;
+  }
+
   private accrueExpansionCapacity(dt: number): void {
     this.expansionCapacity += (this.capacityRate.total / 60) * dt;
   }
@@ -1156,27 +1272,10 @@ export class World {
     // is what normally moves people on before it comes to this; losing a
     // resident here only happens once the *whole* civilisation's supportable
     // total has shrunk, not because any one place ran dry. Only someone not
-    // already out on the roads leaves — and a free dependent goes first, the
-    // same way one gets added first on the way up (see `addVillager`), so
-    // shrinking doesn't quietly grind the labour force down to nothing while
-    // dependents (who were never doing anything anyway) pile up untouched.
-    //
-    // Forcibly retiring a *working* non-dependent instead, to correct the
-    // ratio the moment it drifts, was tried and reverted: it fixes the
-    // ratio but at the cost of the very production that population depends
-    // on, and pulling a farm or mine worker out mid-shortage can tip
-    // `sustainablePopulation` itself downward, which shrinks the target
-    // further, which pulls another worker — a real death spiral, not a
-    // cosmetic one, over something that was only ever a bookkeeping
-    // imbalance. Correcting it has to stay confined to people who aren't
-    // doing anything, which then only leaves dependents to take almost
-    // every time — see `dependentDebt` for how the *next* births pay that
-    // back instead.
+    // already out on the roads leaves.
     const pool = [...this.villagers].reverse();
     const leaving = this.pickDeparture(pool);
     if (!leaving) return;
-    if (leaving.isDependent) this.dependentDebt--;
-    else this.dependentDebt++;
     const index = this.villagers.indexOf(leaving);
     this.villagers.splice(index, 1);
   }
@@ -1184,37 +1283,21 @@ export class World {
   /**
    * Who actually leaves when the civilisation can no longer support everyone.
    *
-   * Two problems with the old rule ("a free dependent, else anyone free").
+   * Whoever is free goes first — costs nothing, since a free villager has no
+   * job to lose either way.
    *
-   * A dependent is *always* free — they never take a job — so a shrink
-   * essentially always took one, and since population spends its life
-   * oscillating around whatever the food supply can carry, repeated
-   * shrink-and-regrow cycles ground the dependent share to literally zero.
-   * At forty-four residents there were no dependents at all, which quietly
-   * inflated the labour force by half against the 70/30 split it is supposed
-   * to hold. Preferring whichever side of that split is currently
-   * *over-represented* fixes it at the point of departure, and costs nothing:
-   * both candidates are people with no job either way.
-   *
-   * Worse, once every working adult held a post there was nobody free at all,
-   * so nothing could leave — and the civilisation simply froze, forty-four
-   * people living off food for thirty, indefinitely, with the readout plainly
-   * saying so. A famine has to be able to resolve. It resolves the way it
-   * would in life: the workshop closes before the farm does. Taking someone
-   * off a *resource node* is the thing that must never happen here — that was
-   * tried, and cutting food production to fix a population overhang is a real
-   * death spiral (see `dependentDebt`) — but an industry is discretionary
-   * work by definition, and shutting one is exactly what a place short of
-   * food would do.
+   * Once every villager held a post there was nobody free at all, so nothing
+   * could leave — and the civilisation simply froze, indefinitely, with the
+   * readout plainly saying so. A famine has to be able to resolve. It
+   * resolves the way it would in life: the workshop closes before the farm
+   * does. Taking someone off a *resource node* is the thing that must never
+   * happen here — that was tried, and cutting food production to fix a
+   * population overhang is a real death spiral — but an industry is
+   * discretionary work by definition, and shutting one is exactly what a
+   * place short of food would do.
    */
   private pickDeparture(pool: Villager[]): Villager | null {
-    const dependents = this.villagers.filter((v) => v.isDependent).length;
-    const wanted = Math.round(this.villagers.length * (1 - WORKING_POPULATION_SHARE));
-    const dependentFirst = dependents > wanted;
-
     const free = pool.filter((v) => v.isFree);
-    const preferred = free.find((v) => v.isDependent === dependentFirst);
-    if (preferred) return preferred;
     if (free.length > 0) return free[0];
 
     // Nobody idle anywhere. Close a workshop rather than let the shortfall
@@ -1281,6 +1364,8 @@ export class World {
       settlements: this.settlements,
       population: this.villagers.length,
       held: (point) => this.territory.contains(point),
+      room: (point) => this.roomAt(point),
+      occupied: (point) => this.placeAt(point) !== null,
       hours: this.hours,
       found: (patch, position, trade, potential, origin) =>
         this.foundSettlement(patch, position, trade, potential, origin),
@@ -1382,26 +1467,37 @@ export class World {
     return this.settlements.find((s) => dist(s.position, point) <= s.radius + slack) ?? null;
   }
 
+  /**
+   * The place whose ground a point falls on — the whole of its sprawl, not
+   * the glyph in the middle of it.
+   *
+   * Separate from `siteAt` rather than folded into it, because these are two
+   * different hit targets for two different purposes and always were. A road
+   * anchors on a place's *centre* (`anchorAt`, via `Site.radius`), and it has
+   * to: "draw a road to Kuttenberg" means to the town, not to whichever of
+   * its outlying closes the cursor happened to be over. But "tell me about
+   * this place" plainly means the place, and a town that covers a quarter of
+   * the screen having a twenty-pixel click target in the middle of it was
+   * only ever defensible while a town covered nothing at all.
+   *
+   * The registry guarantees one owner per cell, so there is never an
+   * ambiguity to resolve here.
+   */
+  placeAt(point: Vec2): Trader | null {
+    for (const settlement of this.settlements) {
+      if (settlement.ground.contains(point, this.terrain)) return settlement;
+    }
+    return this.village.ground.contains(point, this.terrain) ? this.village : null;
+  }
+
+  /** The works whose ground of operation a point falls on, for the same reason. */
+  workingsAt(point: Vec2): ResourceNode | null {
+    return this.claimedNodes.find((node) => node.ground.contains(point, this.terrain)) ?? null;
+  }
+
   /** New people default to the founding village; migration redistributes them from there. */
   private addVillager(home: Trader = this.village): Villager {
-    // Decided against the actual running ratio, not a coin flip per person —
-    // a coin flip can unluckily leave a tiny starting population with no
-    // workers at all, an unrecoverable dead end this game avoids on purpose.
-    // Comparing against the count *after* this birth keeps the fraction
-    // pinned close to the target at every population size, including one.
-    // `dependentDebt` folds in on top of the plain target: a run of
-    // shrink events that could only ever safely take a dependent (see
-    // `reconcilePopulation`) leans the next few births toward a
-    // non-dependent instead, and vice versa, so the ratio a shrink couldn't
-    // hit gets paid back at the next opportunity rather than staying lost.
-    const totalAfter = this.villagers.length + 1;
-    const targetDependents = Math.round(totalAfter * (1 - WORKING_POPULATION_SHARE)) - this.dependentDebt;
-    const currentDependents = this.villagers.filter((v) => v.isDependent).length;
-    const isDependent = currentDependents < targetDependents;
-    if (isDependent && this.dependentDebt < 0) this.dependentDebt++;
-    else if (!isDependent && this.dependentDebt > 0) this.dependentDebt--;
-
-    const villager = new Villager(this.nextVillagerId++, home, isDependent);
+    const villager = new Villager(this.nextVillagerId++, home);
     villager.restAtHome();
     this.villagers.push(villager);
     return villager;

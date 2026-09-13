@@ -2,7 +2,16 @@ import Phaser from 'phaser';
 import { cumulativeLengths, resamplePolyline, type Vec2 } from '../sim/geometry';
 import type { RoadEdge } from '../sim/roadNetwork';
 import type { World } from '../sim/world';
-import { COLORS, DEPTH, roadCasingColor, roadColor, roadWidth } from './theme';
+import {
+  COLORS,
+  DEPTH,
+  roadAlpha,
+  roadCasingAlpha,
+  roadCasingColor,
+  roadCasingGrow,
+  roadColor,
+  roadWidth,
+} from './theme';
 
 export interface RoadPreview {
   points: Vec2[];
@@ -14,7 +23,7 @@ export interface RoadPreview {
 /** Distance between the points a road's width is measured at. */
 const SAMPLE_SPACING = 15;
 /** Samples per colour band, so a road can shade from paved to bare dirt along its own length. */
-const COLOR_BAND = 5;
+const COLOR_BAND = 3;
 /** Wear moves slowly, so the widths only need refreshing a few times a second. */
 const REFRESH_INTERVAL = 0.2;
 
@@ -161,8 +170,19 @@ export class RoadLayer {
       const capStart = start === 0;
       const capEnd = end === count - 1;
 
-      this.ribbon(g, points, widths, 4, roadCasingColor(wear), 0.16, capStart, capEnd);
-      this.ribbon(g, points, widths, 0, roadColor(wear), 0.95, capStart, capEnd);
+      // Two passes, both driven by the same wear: a shadow that widens and
+      // darkens as the road gets busier, and the pale surface on top of it.
+      // The shadow is what stops a near-white highway dissolving into pale
+      // fields, and most of what reads as bulk at a glance.
+      //
+      // Its width is taken per sample rather than per band. Colour can step
+      // between bands without anyone noticing; an outline that steps leaves a
+      // visible notch in the road's silhouette at every band boundary.
+      const casing = points.map(
+        (p, i) => widths[i] + roadCasingGrow(this.world.traffic.wearAt(p)),
+      );
+      this.ribbon(g, points, casing, 0, roadCasingColor(wear), roadCasingAlpha(wear), capStart, capEnd);
+      this.ribbon(g, points, widths, 0, roadColor(wear), roadAlpha(wear), capStart, capEnd);
 
       if (capEnd) break;
     }
@@ -201,7 +221,11 @@ export class RoadLayer {
     const points = shape.samples.slice(from, to + 1);
     if (points.length < 2) return;
 
-    const deck = Math.max(9, roadWidth(2) + 4);
+    // Wide enough to carry the road that crosses it, whatever that road has
+    // grown to — a highway must not spill over the sides of its own bridge.
+    let carried = 0;
+    for (let i = from; i <= to; i++) carried = Math.max(carried, shape.widths[i]);
+    const deck = Math.max(9, carried + 4);
 
     // The deck itself: pale timber, a little wider than the road it carries.
     const widths = points.map(() => deck);
@@ -288,10 +312,11 @@ export class RoadLayer {
     for (const node of this.world.network.nodes) {
       if (!node.isJunction || node.edges.length < 3) continue;
 
-      const width = roadWidth(this.world.traffic.wearAt(node.position));
-      g.fillStyle(COLORS.roadCasing, 0.28);
-      g.fillCircle(node.position.x, node.position.y, width / 2 + 3.5);
-      g.fillStyle(COLORS.road, 1);
+      const wear = this.world.traffic.wearAt(node.position);
+      const width = roadWidth(wear);
+      g.fillStyle(roadCasingColor(wear), roadCasingAlpha(wear) + 0.08);
+      g.fillCircle(node.position.x, node.position.y, width / 2 + roadCasingGrow(wear) / 2);
+      g.fillStyle(roadColor(wear), roadAlpha(wear));
       g.fillCircle(node.position.x, node.position.y, width / 2 + 0.5);
     }
   }
@@ -325,14 +350,24 @@ export class RoadLayer {
     const preview = this.preview;
     if (!preview || preview.points.length < 2) return;
 
-    const color = preview.valid ? COLORS.road : COLORS.ink;
-    const alpha = preview.valid ? 0.5 : 0.18;
+    const trace = () => {
+      g.beginPath();
+      g.moveTo(preview.points[0].x, preview.points[0].y);
+      for (const p of preview.points.slice(1)) g.lineTo(p.x, p.y);
+      g.strokePath();
+    };
 
-    g.lineStyle(6, color, alpha);
-    g.beginPath();
-    g.moveTo(preview.points[0].x, preview.points[0].y);
-    for (const p of preview.points.slice(1)) g.lineTo(p.x, p.y);
-    g.strokePath();
+    // The line the finished road will be: pale, over its own shadow, so a
+    // valid preview reads against light fields as well as dark woodland.
+    if (preview.valid) {
+      g.lineStyle(9, COLORS.roadCasing, 0.3);
+      trace();
+      g.lineStyle(5, COLORS.road, 0.85);
+      trace();
+    } else {
+      g.lineStyle(6, COLORS.ink, 0.18);
+      trace();
+    }
 
     if (preview.snap) {
       g.lineStyle(2, COLORS.roadCasing, 0.75);

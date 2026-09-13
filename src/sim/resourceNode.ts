@@ -1,4 +1,5 @@
 import type { Vec2 } from './geometry';
+import { LandParcel, workedSuitability } from './landUse';
 import {
   nextInvestmentThreshold,
   nextNodeThreshold,
@@ -17,6 +18,19 @@ import type { Villager } from './villager';
  * unchanged — only partial staffing gets discounted.
  */
 const DIMINISHING_EXPONENT = 0.7;
+
+/**
+ * The worst a works can be reduced to by losing its ground.
+ *
+ * A floor rather than a straight multiplier, because "the town built over the
+ * wood" should be a real, visible cost and never a way to switch a site off
+ * entirely. A node driven to zero output is a node whose workers are posted
+ * to nothing, whose investment shipments become pointless, and whose
+ * settlement then starves — the resource-starvation spiral this project has
+ * already been burned by twice. At 0.45 a thoroughly built-over works is
+ * plainly worse off, still worth staffing, and still worth the road.
+ */
+export const MIN_GROUND_QUALITY = 0.45;
 
 export interface ResourceNodeConfig {
   id: number;
@@ -49,6 +63,25 @@ export class ResourceNode {
   readonly baseProductionInterval: number;
   readonly baseCapacity: number;
   readonly radius = 22;
+
+  /**
+   * The ground this works actually operates over — the wood being felled and
+   * replanted, the fields being ploughed, the stone being quarried. The node
+   * itself stays one point: it is where the workers muster and where a
+   * transporter comes to load, exactly as before. What is new is that the
+   * *production* behind that point now has somewhere it happens, which can be
+   * good country or poor, can grow with the works, and can be built over by
+   * the town next door. See `landUse.ts`.
+   */
+  readonly ground: LandParcel;
+
+  /**
+   * How much the ground it holds is actually supporting it, 0.45 to 1 — see
+   * `groundQuality`. Recomputed by `World` on the same timer the parcels grow
+   * on rather than read live, because it walks the whole parcel and
+   * `productionInterval` is asked for on every tick by every worker.
+   */
+  groundQuality = 1;
 
   state: NodeState = NodeState.Hidden;
 
@@ -87,6 +120,12 @@ export class ResourceNode {
     this.resource = cfg.resource;
     this.baseProductionInterval = cfg.productionInterval;
     this.baseCapacity = cfg.capacity ?? 8;
+    this.ground = new LandParcel({
+      key: `node:${cfg.id}`,
+      kind: 'worked',
+      origin: this.position,
+      suitabilityOf: (sample) => workedSuitability(sample, this.resource),
+    });
   }
 
   get levelInfo(): NodeLevelInfo {
@@ -125,13 +164,32 @@ export class ResourceNode {
     return Math.round(this.baseCapacity * this.levelInfo.capacityMultiplier);
   }
 
+  /**
+   * Seconds per unit per worker, after both the node's own level and the
+   * ground it is standing on have had their say.
+   *
+   * The second term is the point of the whole land-use system. A works that
+   * holds the acreage its level calls for, on country suited to its trade,
+   * produces exactly what it always did — nothing is nerfed. What is new is
+   * that a wood whose best stands have been built over by the village beside
+   * it, or a quarry hemmed in between two others opened on the same ridge,
+   * genuinely yields less, because there is less of it being worked. That is
+   * the cost a town pays for sprawling into its own hinterland, and it is
+   * levied here rather than as a rule somewhere that says "towns may not
+   * expand".
+   */
   get productionInterval(): number {
-    return this.baseProductionInterval / this.levelInfo.productionMultiplier;
+    return this.baseProductionInterval / (this.levelInfo.productionMultiplier * this.groundQuality);
   }
 
-  /** How far this node's own development reaches, before roads or a settlement's reach add to it. */
-  get influenceRadius(): number {
-    return this.levelInfo.influenceRadius;
+  /** Roughly how far this works' area of operation reaches at its current level. */
+  get workedRadius(): number {
+    return this.levelInfo.workedRadius;
+  }
+
+  /** The acreage this works is trying to hold, in world units². */
+  get workedArea(): number {
+    return Math.PI * this.workedRadius ** 2;
   }
 
   /** How many hands this node can host at once, grown into rather than borrowed from a trader's tier. */

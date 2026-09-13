@@ -153,3 +153,36 @@ function stitch(segments: Segment[]): Vec2[][] {
 
   return loops;
 }
+
+/**
+ * Corner-cutting subdivision: a cheap way to round off the grid's stairsteps.
+ *
+ * Lives beside the tracer rather than in whichever layer needed it first,
+ * because everything that traces a contour out of a cell grid needs the same
+ * two passes afterwards to stop looking like a cell grid — the realm's border
+ * did, and every parcel of held ground does too (see `LandUseLayer`).
+ */
+export function chaikin(points: Vec2[], iterations: number): Vec2[] {
+  let pts = points;
+  for (let it = 0; it < iterations; it++) {
+    const next: Vec2[] = [];
+    const n = pts.length;
+    for (let i = 0; i < n; i++) {
+      const p0 = pts[i];
+      const p1 = pts[(i + 1) % n];
+      next.push({ x: p0.x * 0.75 + p1.x * 0.25, y: p0.y * 0.75 + p1.y * 0.25 });
+      next.push({ x: p0.x * 0.25 + p1.x * 0.75, y: p0.y * 0.25 + p1.y * 0.75 });
+    }
+    pts = next;
+  }
+  return pts;
+}
+
+/** Deterministic, position-based wobble, so an outline reads as drawn rather than computed. */
+export function jitterLoop(points: Vec2[], strength: number): Vec2[] {
+  return points.map((p) => {
+    const nx = Math.sin(p.x * 0.014 + p.y * 0.021) + Math.sin(p.x * 0.037 - p.y * 0.009) * 0.6;
+    const ny = Math.sin(p.x * 0.019 - p.y * 0.027) + Math.sin(p.x * 0.008 + p.y * 0.033) * 0.6;
+    return { x: p.x + nx * strength * 0.4, y: p.y + ny * strength * 0.4 };
+  });
+}

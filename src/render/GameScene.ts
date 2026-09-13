@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import { RoadDrawing } from '../input/RoadDrawing';
 
 import type { ResourceNode } from '../sim/resourceNode';
-import type { Site } from '../sim/roadNetwork';
+import type { RoadEdge, Site } from '../sim/roadNetwork';
 import { World, type WorldConfig } from '../sim/world';
 import { Hud } from '../ui/Hud';
 import { SpeedControl } from '../ui/SpeedControl';
@@ -11,6 +11,7 @@ import { DebugLayer } from './DebugLayer';
 import { FrontierLayer } from './FrontierLayer';
 import { FxLayer } from './FxLayer';
 import { InfluenceLayer } from './InfluenceLayer';
+import { LandUseLayer } from './LandUseLayer';
 import { RiverLayer } from './RiverLayer';
 import { RoadLayer } from './RoadLayer';
 import { SettlementLayer } from './SettlementLayer';
@@ -29,6 +30,7 @@ export class GameScene extends Phaser.Scene {
   private terrainLayer!: TerrainLayer;
   private riverLayer!: RiverLayer;
   private influence!: InfluenceLayer;
+  private landUse!: LandUseLayer;
   private settlementPotential!: SettlementPotentialLayer;
   private frontier!: FrontierLayer;
   private roads!: RoadLayer;
@@ -67,6 +69,7 @@ export class GameScene extends Phaser.Scene {
     this.terrainLayer = new TerrainLayer(this, this.world);
     this.riverLayer = new RiverLayer(this, this.world);
     this.influence = new InfluenceLayer(this, this.world);
+    this.landUse = new LandUseLayer(this, this.world);
     this.settlementPotential = new SettlementPotentialLayer(this, this.world);
     this.roads = new RoadLayer(this, this.world);
     this.sites = new SiteLayer(this, this.world);
@@ -111,9 +114,10 @@ export class GameScene extends Phaser.Scene {
     this.fx.handle(this.world.drainEvents());
 
     this.camera.update(dt);
-    this.terrainLayer.update();
+    this.terrainLayer.update(dt);
     this.riverLayer.update(this.cameras.main);
     this.influence.update(dt, this.cameras.main.zoom);
+    this.landUse.update(dt, this.cameras.main.zoom);
     this.settlementPotential.update(dt);
     this.roads.update(dt);
     this.sites.update(dt);
@@ -166,14 +170,37 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    this.selected = null;
+    // Clicking a town's fields is clicking the town. The selection sticks, so
+    // the panel stays put while the player drags the map around under it.
+    this.selected = this.world.placeAt(point) ?? this.world.workingsAt(point);
     this.camera.beginPan(pointer);
+  }
+
+  /**
+   * What the cursor is on, in the order the player means it.
+   *
+   * A place's glyph wins, because that is the thing they aimed at. A road
+   * wins next, because a road inside a town's own ground still has to be
+   * hoverable and erasable — the sprawl is not allowed to swallow the one
+   * thing the player actually draws. Only then does held ground answer, which
+   * is what turns a town's whole extent into its click target without taking
+   * anything away from what was already there. See `World.placeAt`.
+   */
+  private focusAt(point: { x: number; y: number }): { site: Site | null; road: RoadEdge | null } {
+    const site = this.world.siteAt(point);
+    if (site) return { site, road: null };
+
+    const road = this.world.roadAt(point);
+    if (road) return { site: null, road };
+
+    return { site: this.world.placeAt(point) ?? this.world.workingsAt(point), road: null };
   }
 
   private onPointerMove(pointer: Phaser.Input.Pointer): void {
     const point = this.worldPoint(pointer);
 
-    this.hovered = this.world.siteAt(point);
+    const focus = this.focusAt(point);
+    this.hovered = focus.site;
     this.sites.setHovered(this.hovered);
     this.frontier.setHovered(this.frontierAt(point));
     this.settlements.setHovered(this.hovered);
@@ -186,7 +213,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Show which stretch is under the cursor: that is the unit an erase takes.
-    const road = this.hovered ? null : this.world.roadAt(point);
+    const road = focus.road;
     this.roads.setHighlight(road, false);
     this.hoveredRoadPoint = road ? point : null;
 

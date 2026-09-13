@@ -108,7 +108,7 @@ for (let t = 0; t < totalSeconds; t += DT) {
   world.drainUncoveredChunks();
 
   if (Math.abs(t % (10 * HOURS_PER_DAY)) < DT / 2) {
-    const working = world.villagers.filter((v) => !v.isDependent).length;
+    const total = world.villagers.length;
     const transporting = world.villagers.filter((v) => v.role === VillagerRole.Transporter).length;
     const claimedDistances = world.nodes.filter((n) => n.isClaimed).map((n) => dist(n.position, world.village.position));
     log.push({
@@ -120,7 +120,7 @@ for (let t = 0; t < totalSeconds; t += DT) {
       settlements: world.settlements.length,
       capacity: Math.round(world.expansionCapacity),
       farthestClaimDist: Math.round(Math.max(0, ...claimedDistances)),
-      transporterShare: working > 0 ? Math.round((100 * transporting) / working) : 0,
+      transporterShare: total > 0 ? Math.round((100 * transporting) / total) : 0,
     });
   }
 }

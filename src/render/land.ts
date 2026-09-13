@@ -64,27 +64,59 @@ function smoothstep(edge0: number, edge1: number, v: number): number {
  * could.
  */
 export const WATER = {
-  deep: 0x4a6675,
-  shallow: 0x7a9aa6,
+  deep: 0x44606f,
+  shallow: 0x7b9daf,
   /** The pale rim where water meets land — sand, silt, trodden bank. */
-  shore: 0xc0b590,
+  shore: 0xb3a886,
 } as const;
 
 const DEEP_WATER = rgb(WATER.deep);
 const SHALLOW_WATER = rgb(WATER.shallow);
 const SHORE = rgb(WATER.shore);
 
-/** Lowland runs dry straw to lush pasture along moisture; forest sits at the wet end. */
-const DRY_GRASS = rgb(0xc2bd85);
-const PASTURE = rgb(0x9fae70);
-const WET_MEADOW = rgb(0x7d9457);
+/**
+ * Lowland runs dry straw to lush pasture along moisture; forest sits at the
+ * wet end.
+ *
+ * Pitched deliberately down the value scale from where it started. The whole
+ * palette used to live in the top third of the range, which made every
+ * transition a change of *hue* on ground that was uniformly light — and hue
+ * is the weakest signal the eye has at map zoom. Nothing could then be read
+ * from across the map: woodland, pasture and upland were three similar-weight
+ * greens, and a road drawn over them had nothing to be lighter than.
+ *
+ * Dropping open country to a mid olive costs nothing legible — it is still
+ * plainly grass — and buys the two things the map was missing: woods that
+ * read as a dark mass without being painted any darker than they already
+ * were, and headroom above the ground for the things that are supposed to be
+ * bright, which are the roads and the settlements.
+ *
+ * The other half of the correction is temperature. Measured against a drawn
+ * estate map of real country, every tonal band of it — deep woodland, open
+ * ground, cultivated strip — carries as much red as green; ours carried
+ * fifteen to twenty units less, which is the difference between khaki and
+ * grass, and it is why the landscape read as a satellite pass rather than as
+ * pigment.
+ *
+ * That warming is applied to the *dry* end and not across the board, which
+ * matters and was got wrong once. Matching the reference's average hue warms
+ * every stop equally and drains the green out of damp country along with the
+ * parched — leaving a map that is uniformly khaki, which the reference is
+ * not. Its average is warm because most of its ground is dry; its damp
+ * ground and its woods are plainly green. So dry grass and dry upland are
+ * khaki, pasture and meadow stay green, and the average falls out of how
+ * much of each the country happens to have — which is the right way round.
+ */
+const DRY_GRASS = rgb(0x9b945c);
+const PASTURE = rgb(0x839152);
+const WET_MEADOW = rgb(0x62763c);
 
 /** Higher ground loses green and gains the olive-brown of thin upland soil. */
-const DRY_UPLAND = rgb(0xa89b67);
-const WET_UPLAND = rgb(0x7f8a58);
+const DRY_UPLAND = rgb(0x80754a);
+const WET_UPLAND = rgb(0x687540);
 
-const SCREE = rgb(0x9b9284);
-const BARE_ROCK = rgb(0x776f62);
+const SCREE = rgb(0x7c7469);
+const BARE_ROCK = rgb(0x595348);
 const SNOW = rgb(0xd8d3c4);
 
 /**
@@ -216,8 +248,18 @@ const LIGHT = (() => {
   return { x: v.x / len, y: v.y / len, z: v.z / len };
 })();
 
-const AMBIENT = 0.62;
-const DIRECT = 0.62;
+/**
+ * Ambient is the floor a fully shadowed face falls to; direct is what a face
+ * square to the light adds on top. They are tuned as a pair, and around the
+ * constraint that flat ground must come out at very nearly 1 — ground with no
+ * slope should be the palette colour, not a shaded version of it.
+ *
+ * Widening the gap between them (rather than raising both) is what puts the
+ * modelling back into a landscape whose palette has been pulled down: the
+ * same hills, lit harder, on ground with more room to be darkened.
+ */
+const AMBIENT = 0.55;
+const DIRECT = 0.74;
 
 /**
  * Lambert shading from the local slope, returned as a multiplier on ground

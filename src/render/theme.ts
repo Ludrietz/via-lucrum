@@ -28,10 +28,12 @@ export const COLORS = {
   stoneBlocks: 0x9c948a,
   tools: 0x8a3a2e,
 
-  roadCasing: 0x6b5b45,
-  road: 0x8d7a5a,
+  roadCasing: 0x6f6047,
+  road: 0xded3b4,
 
   influence: 0xb9a06a,
+  /** Ground a place is actually built over and farms from — see `LandUseLayer`. */
+  settledGround: 0xa8794a,
   erase: 0x9c3b2f,
 } as const;
 
@@ -92,12 +94,16 @@ export const WORKER_LABELS: Record<SiteType, string> = {
  * than in steps, so one road can be a highway where the traffic converges and
  * a trail out at its far end.
  */
-const TRAIL_WIDTH = 4;
-const HIGHWAY_WIDTH = 16;
+const TRAIL_WIDTH = 3;
+const HIGHWAY_WIDTH = 22;
 
 export function roadWidth(wear: number): number {
-  const t = Math.max(0, Math.min(1, wear / WEAR_FULL));
-  return TRAIL_WIDTH + (HIGHWAY_WIDTH - TRAIL_WIDTH) * Math.pow(t, 0.85);
+  return TRAIL_WIDTH + (HIGHWAY_WIDTH - TRAIL_WIDTH) * Math.pow(wearFraction(wear), 0.7);
+}
+
+/** Where a stretch of road sits between untouched ground and fully packed. */
+export function wearFraction(wear: number): number {
+  return Math.max(0, Math.min(1, wear / WEAR_FULL));
 }
 
 /** The names are only for the UI; the drawing itself is continuous. */
@@ -108,16 +114,18 @@ export function roadTierName(wear: number): string {
 }
 
 /**
- * A road's colour follows its wear the same continuous way its width does:
- * bare dirt trail, through packed gravel, to a paved grey highway. Three
- * stops, linearly interpolated between whichever two straddle the current
- * wear — no hard steps, so one road can visibly shade from paved near a busy
- * junction to bare dirt out at its quiet far end.
+ * A road's colour follows its wear the same continuous way its width does —
+ * and it does so by getting *paler*, not greyer. A worn route on a drawn map
+ * is a bright line across dark country: the stroke the eye follows first. So
+ * a faint track is dusty tan, barely lifted off the ground it crosses, and a
+ * highway is all but white. Three stops, linearly interpolated between
+ * whichever two straddle the current wear — no hard steps, so one road can
+ * shade from near-white at a busy junction to bare dust at its quiet far end.
  */
 const ROAD_STOPS: ReadonlyArray<{ at: number; road: number; casing: number }> = [
-  { at: 0, road: 0x8d7a5a, casing: 0x6b5b45 }, // dirt trail
-  { at: 0.5, road: 0x9d9179, casing: 0x7a7260 }, // packed gravel
-  { at: 1, road: 0x8f8d89, casing: 0x605e5a }, // paved, grey
+  { at: 0, road: 0xc7b998, casing: 0x6b5b45 }, // faint track, the colour of dust
+  { at: 0.45, road: 0xe3dac2, casing: 0x7d6f53 }, // packed, pale
+  { at: 1, road: 0xfbf8f0, casing: 0x8b7d61 }, // highway, near white
 ];
 
 function lerpChannel(a: number, b: number, t: number, shift: number): number {
@@ -157,6 +165,59 @@ export function roadCasingColor(wear: number): number {
   return roadStopColor(wear, 'casing');
 }
 
+/**
+ * The pale surface earns its brightness: a faint track is half sunk into the
+ * ground it crosses, a highway sits solidly on top of it.
+ */
+export function roadAlpha(wear: number): number {
+  return 0.78 + 0.22 * wearFraction(wear);
+}
+
+/**
+ * How hard the shadow under a road reads. A near-white highway needs a
+ * definite edge to keep it from bleaching into the pale fields around it; a
+ * dusty track barely needs separating from the dirt it already is.
+ */
+export function roadCasingAlpha(wear: number): number {
+  return 0.2 + 0.3 * wearFraction(wear);
+}
+
+/** A busier road throws a wider shadow, which is most of what reads as bulk. */
+export function roadCasingGrow(wear: number): number {
+  return 2.6 + 3.4 * wearFraction(wear);
+}
+
+/**
+ * How far back from its centreline a road has pushed the trees, in world
+ * units — the half-width of the swathe it has cut through a wood.
+ *
+ * Driven by the same wear as the road's width and its colour, and for the
+ * same reason: a road's development is *one* fact about it, and everything
+ * the map says about that road should be a reading of that fact rather than
+ * another thing to keep in step with it. A footpath threads between the
+ * trunks and takes down almost nothing; a road that carries carts needs room
+ * to pass, and gets cleared to suit.
+ *
+ * What grows is the verge, not merely the road: at full development the cut
+ * is about twice the width of the road inside it, which is what makes the
+ * corridor read as *a clearing with a road in it* rather than as trees that
+ * happen to stop. The verge is pegged to the scatter spacing in
+ * `vegetation.ts` so that a mature road always takes down a rank or two of
+ * trees either side, rather than leaving a gap too narrow for the eye to
+ * find.
+ *
+ * Note what this deliberately is not: it clears *drawn* trees and says
+ * nothing to the terrain underneath, which stays forest — still classified as
+ * woodland, still painted as woodland, still workable as woodland. A road
+ * through a wood is a gap in the canopy, not a change of land.
+ */
+const TREE_SPACING = 15;
+const VERGE = TREE_SPACING * 1.4;
+
+export function roadClearing(wear: number): number {
+  return roadWidth(wear) / 2 + 1.5 + VERGE * wearFraction(wear);
+}
+
 /** Settlements are coloured by what they live on. */
 export const TRADE_COLORS: Record<string, number> = {
   wood: COLORS.forest,
@@ -177,11 +238,34 @@ export const DEPTH = {
   // The ripple hatching sits on the water and under everything that stands on
   // the bank, same as the water itself.
   waterPattern: 0.6,
-  vegetation: 1,
   debugGrid: 2,
   influence: 5,
+  // Held ground sits just above the realm's border and below everything
+  // drawn on top of the country. Workings first, settled ground over them:
+  // where the two overlap it is because a town has built on a works, and the
+  // town is what is actually there now.
+  workedGround: 5.6,
+  settledGround: 5.8,
   settlementPotential: 7,
   roads: 10,
+  // Over the roads, for the same reason rivers go under the canopy: a road
+  // that nothing can ever overlap is a line drawn *on* the map rather than a
+  // thing lying in the country, and the eye knows the difference immediately.
+  //
+  // It costs nothing to get right, because of how a tree is drawn — scattered
+  // at its foot and painted upwards from there. A tree north of a road grows
+  // away from it and can never reach it; only a tree standing south of the
+  // road has a crown that comes back over it, which is exactly the one that
+  // should. So the ordering that looks like a blunt "trees win" is really the
+  // correct occlusion for this projection, and it falls out of the depth
+  // alone with nothing sorting per tree.
+  //
+  // What it overlaps is then a readout of how developed the road is, with no
+  // extra rule: `roadClearing` holds the trees back by a margin that grows
+  // with traffic, so a faint track through a wood is half-roofed by the
+  // branches it threads between and a highway runs open down the middle of
+  // its own clearing.
+  vegetation: 11,
   preview: 15,
   sites: 20,
   villagers: 30,

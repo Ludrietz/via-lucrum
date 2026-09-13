@@ -11,8 +11,21 @@ export interface NodeLevelInfo {
   threshold: number;
   capacityMultiplier: number;
   productionMultiplier: number;
-  /** How far this level's own influence reaches, before roads or reveal have any say. */
-  influenceRadius: number;
+  /**
+   * Roughly how far this level's *area of operation* reaches — the stretch of
+   * wood actually being felled and replanted, the fields actually ploughed.
+   * See `landUse.ts`: the real shape follows the ground and is never this
+   * circle, but this is the acreage it is trying to hold.
+   *
+   * This field used to be `influenceRadius` and meant "which sites this node
+   * lets the civilisation see and use". That job was taken off it by the
+   * territory redesign and nothing ever read it again — including the level-1
+   * entry sitting at 0, which would have meant a node at its opening level
+   * projecting nothing at all. It is now the one number that actually says
+   * how much country a works occupies, which is what it always sounded like
+   * it said.
+   */
+  workedRadius: number;
   /**
    * How many hands one workplace can host, once it's grown enough to make
    * room for them. Used to live on whichever trader's tier happened to be
@@ -22,12 +35,22 @@ export interface NodeLevelInfo {
   workerCapacity: number;
 }
 
+/**
+ * `workedRadius` grows about threefold across the ladder, which is an eight-
+ * fold growth in acreage — a level-1 works holds around 80 hectares and a
+ * level-5 one around 720, at `scale.ts`'s four metres to the unit. Those are
+ * the right orders of magnitude for a coppiced wood serving a hamlet and a
+ * managed forest district respectively, and the top of the ladder is
+ * deliberately not much more than `MIN_NODE_DISTANCE` (165): two mature works
+ * in the same valley are *meant* to end up sharing the ground and each be a
+ * little the poorer for it.
+ */
 export const NODE_LEVELS: readonly NodeLevelInfo[] = [
-  { level: 1, threshold: 0, capacityMultiplier: 1, productionMultiplier: 1, influenceRadius: 0, workerCapacity: 1 },
-  { level: 2, threshold: 30, capacityMultiplier: 1.4, productionMultiplier: 1.2, influenceRadius: 60, workerCapacity: 1 },
-  { level: 3, threshold: 90, capacityMultiplier: 1.8, productionMultiplier: 1.45, influenceRadius: 110, workerCapacity: 2 },
-  { level: 4, threshold: 220, capacityMultiplier: 2.4, productionMultiplier: 1.75, influenceRadius: 170, workerCapacity: 2 },
-  { level: 5, threshold: 500, capacityMultiplier: 3, productionMultiplier: 2.1, influenceRadius: 240, workerCapacity: 3 },
+  { level: 1, threshold: 0, capacityMultiplier: 1, productionMultiplier: 1, workedRadius: 80, workerCapacity: 1 },
+  { level: 2, threshold: 30, capacityMultiplier: 1.4, productionMultiplier: 1.2, workedRadius: 120, workerCapacity: 1 },
+  { level: 3, threshold: 90, capacityMultiplier: 1.8, productionMultiplier: 1.45, workedRadius: 165, workerCapacity: 2 },
+  { level: 4, threshold: 220, capacityMultiplier: 2.4, productionMultiplier: 1.75, workedRadius: 205, workerCapacity: 2 },
+  { level: 5, threshold: 500, capacityMultiplier: 3, productionMultiplier: 2.1, workedRadius: 240, workerCapacity: 3 },
 ];
 
 /**

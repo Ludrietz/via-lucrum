@@ -25,8 +25,6 @@ import { ResourceType, VillagerRole, VillagerState } from './types';
 export const WALK_SPEED = DAYS_JOURNEY_METRES / HOURS_PER_DAY / METRES_PER_UNIT;
 /** How much one villager can carry per trip. */
 export const CARRY_CAPACITY = 3;
-/** Share of every birth that grows up able to work — the rest are dependents. */
-export const WORKING_POPULATION_SHARE = 0.7;
 
 export interface Cargo {
   resource: ResourceType;
@@ -55,17 +53,6 @@ export class Villager {
    * is just this changing once someone's finished walking somewhere better.
    */
   home: Trader;
-  /**
-   * Decided once, at birth, and permanent — roughly `WORKING_POPULATION_SHARE`
-   * of everyone never becomes a worker at all. This is the prototype's stand-in
-   * for an age structure: no children/elderly simulation, just a stable split
-   * so population growth doesn't translate one-for-one into labour capacity.
-   * Decided by whoever calls the constructor (see `World.addVillager`) against
-   * the *actual* running ratio, not a coin flip — a coin flip can unluckily
-   * leave a tiny starting population with no workers at all, which is a real
-   * softlock risk this game deliberately avoids everywhere else.
-   */
-  readonly isDependent: boolean;
 
   role: VillagerRole = VillagerRole.Idle;
   state: VillagerState = VillagerState.Waiting;
@@ -101,10 +88,9 @@ export class Villager {
   /** Stable scatter so idlers do not stack on the village centre. */
   readonly restOffset: Vec2;
 
-  constructor(id: number, home: Trader, isDependent: boolean) {
+  constructor(id: number, home: Trader) {
     this.id = id;
     this.home = home;
-    this.isDependent = isDependent;
     this.position = { ...home.position };
 
     const angle = (id * 2.39996) % (Math.PI * 2);
@@ -113,25 +99,12 @@ export class Villager {
   }
 
   /**
-   * Not currently committed to anything — idle and not mid-walk — regardless
-   * of whether they're a worker at all. This is "safe to touch," not
-   * "eligible for a job"; a dependent is just as free to be counted here as
-   * anyone else not busy, which matters when population has to shrink (see
-   * `World.reconcilePopulation`) — removal must not be able to only ever
-   * take non-dependents, or a shrinking population drifts toward nothing
-   * but dependents and the labour force quietly vanishes.
+   * Not currently committed to anything — idle and not mid-walk. Idle but
+   * already walking means migrating to a new home — spoken for, even though
+   * `role` alone wouldn't show it.
    */
   get isFree(): boolean {
     return this.role === VillagerRole.Idle && this.state !== VillagerState.Walking;
-  }
-
-  get isAvailable(): boolean {
-    // Idle but already walking means migrating to a new home — spoken for,
-    // even though `role` alone wouldn't show it. A dependent is free but
-    // never available for a job — they don't work, though they still
-    // migrate with everyone else (see `MigrationSystem`, which tracks idle
-    // time off `role` directly rather than `isAvailable`).
-    return this.isFree && !this.isDependent;
   }
 
   get isWalking(): boolean {

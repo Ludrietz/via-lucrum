@@ -193,7 +193,7 @@ function drawBroadleaf(ctx: CanvasRenderingContext2D, w: number, h: number, rand
   // survive the trees being felled, leaving a shadow of a wood that is no
   // longer there. Carrying the floor on the trees themselves means a cleared
   // wood clears completely, with nothing left to tidy up.
-  ctx.fillStyle = 'rgba(44,58,36,0.5)';
+  ctx.fillStyle = 'rgba(42,43,27,0.62)';
   ctx.beginPath();
   ctx.ellipse(cx + r * 0.22, h - r * 0.22, r * 1.25, r * 0.5, 0, 0, Math.PI * 2);
   ctx.fill();
@@ -205,7 +205,7 @@ function drawBroadleaf(ctx: CanvasRenderingContext2D, w: number, h: number, rand
   ctx.lineTo(cx, cy);
   ctx.stroke();
 
-  ctx.fillStyle = '#3f5733';
+  ctx.fillStyle = '#415030';
   for (let i = 0; i < 4; i++) {
     const angle = (i / 4) * Math.PI * 2 + rand() * 0.9;
     const dist = r * (0.26 + rand() * 0.3);
@@ -214,7 +214,7 @@ function drawBroadleaf(ctx: CanvasRenderingContext2D, w: number, h: number, rand
     ctx.fill();
   }
 
-  ctx.fillStyle = 'rgba(124,145,82,0.65)';
+  ctx.fillStyle = 'rgba(125,127,72,0.5)';
   for (let i = 0; i < 2; i++) {
     ctx.beginPath();
     ctx.arc(cx - r * (0.22 + rand() * 0.18), cy - r * (0.32 + rand() * 0.2), r * (0.3 + rand() * 0.14), 0, Math.PI * 2);
@@ -228,7 +228,7 @@ function drawConifer(ctx: CanvasRenderingContext2D, w: number, h: number, rand: 
   const top = h * 0.04;
   const halfWidth = w * (0.4 + rand() * 0.08);
 
-  ctx.fillStyle = 'rgba(44,58,36,0.48)';
+  ctx.fillStyle = 'rgba(42,43,27,0.6)';
   ctx.beginPath();
   ctx.ellipse(cx + halfWidth * 0.25, base - halfWidth * 0.15, halfWidth * 1.2, halfWidth * 0.46, 0, 0, Math.PI * 2);
   ctx.fill();
@@ -247,7 +247,7 @@ function drawConifer(ctx: CanvasRenderingContext2D, w: number, h: number, rand: 
     const y1 = y0 - (base - top) * 0.46;
     const half = halfWidth * (1 - t * 0.5);
 
-    ctx.fillStyle = tier === 2 ? '#40583a' : '#35492f';
+    ctx.fillStyle = tier === 2 ? '#42522f' : '#354026';
     ctx.beginPath();
     ctx.moveTo(cx, y1);
     ctx.lineTo(cx - half, y0);
@@ -255,7 +255,7 @@ function drawConifer(ctx: CanvasRenderingContext2D, w: number, h: number, rand: 
     ctx.closePath();
     ctx.fill();
 
-    ctx.fillStyle = 'rgba(115,136,78,0.42)';
+    ctx.fillStyle = 'rgba(116,118,68,0.34)';
     ctx.beginPath();
     ctx.moveTo(cx, y1);
     ctx.lineTo(cx - half, y0);
@@ -267,7 +267,7 @@ function drawConifer(ctx: CanvasRenderingContext2D, w: number, h: number, rand: 
 
 /** Low cover for ground that is wooded but not woodland — hedge, gorse, thicket. */
 function drawScrub(ctx: CanvasRenderingContext2D, w: number, h: number, rand: () => number): void {
-  ctx.fillStyle = 'rgba(94,108,64,0.75)';
+  ctx.fillStyle = 'rgba(96,96,56,0.8)';
   for (let i = 0; i < 3; i++) {
     const r = h * (0.4 + rand() * 0.28);
     ctx.beginPath();
@@ -456,11 +456,43 @@ export class Stand {
    * settlement will ask this of its neighbours constantly.
    */
   fell(centre: Vec2, radius: number): number {
-    const r2 = radius * radius;
+    return this.fellAlong([{ x: centre.x, y: centre.y, radius }]);
+  }
+
+  /**
+   * Fell every tree caught by any of a whole list of cuts, restamping once.
+   *
+   * A road cut through a wood is not one clearing but a hundred overlapping
+   * ones, a few world units apart along its length, and doing them one at a
+   * time meant a full restamp of a chunk holding several thousand trees per
+   * sample — the cost of drawing the entire wood again, paid once for every
+   * step along the road. Taking the cuts together makes it one pass over the
+   * placements and one restamp however long the road is, which is what turns
+   * a road through a forest from a frame-dropping event into a free one.
+   */
+  fellAlong(cuts: ReadonlyArray<{ x: number; y: number; radius: number }>): number {
+    if (cuts.length === 0) return 0;
+
     const kept = this.placements.filter((p) => {
-      const dx = p.x - centre.x;
-      const dy = p.y - centre.y;
-      return dx * dx + dy * dy > r2;
+      // Measured against the middle of the canopy, not the foot of the trunk.
+      //
+      // A tree is scattered at its base and drawn upwards from there, so on
+      // screen it occupies the ground *above* where it stands. Testing the
+      // trunk therefore clears a strip that is not the strip the player sees:
+      // trees just south of a clearing keep their canopies hanging over it
+      // and the corridor comes out lopsided — open on its northern side and
+      // roofed over on its southern one. Asking where the crown is instead
+      // clears what actually overlaps.
+      const y = p.y - p.height / (2 * SUPERSAMPLE);
+
+      for (const cut of cuts) {
+        const dx = p.x - cut.x;
+        if (dx > cut.radius || dx < -cut.radius) continue;
+        const dy = y - cut.y;
+        if (dy > cut.radius || dy < -cut.radius) continue;
+        if (dx * dx + dy * dy <= cut.radius * cut.radius) return false;
+      }
+      return true;
     });
 
     const felled = this.placements.length - kept.length;

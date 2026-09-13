@@ -347,10 +347,10 @@ export class Surveyor {
    * wood" is not "connect another forest".
    */
   private strained(world: World): boolean {
-    const working = world.villagers.filter((v) => !v.isDependent).length;
-    if (working === 0) return true;
+    const total = world.villagers.length;
+    if (total === 0) return true;
     const carrying = world.villagers.filter((v) => v.role === VillagerRole.Transporter).length;
-    return carrying / working > STRAIN_LIMIT;
+    return carrying / total > STRAIN_LIMIT;
   }
 
   /** Genuinely short of something people cannot do without — food or timber. */

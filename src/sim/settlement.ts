@@ -1,6 +1,7 @@
 import { emptyAmounts } from './economy';
 import { dist, type Vec2 } from './geometry';
 import { Industry, IndustryType } from './industry';
+import { EMPTY_HINTERLAND, LandParcel, settledSuitability, type GroundSurvey } from './landUse';
 import { Tier, TIER_FOOTPRINT, TIER_RADIUS, tierFor } from './tier';
 import { ResourceType } from './types';
 
@@ -128,6 +129,26 @@ export class Settlement {
   /** One of each kind, present from the start; inert until staffed — see `industry.ts`. */
   readonly industries: Industry[] = Object.values(IndustryType).map((type) => new Industry(type, this));
 
+  /** The ground this place is actually built over and farms from — see `landUse.ts`. */
+  readonly ground: LandParcel;
+  /** How urban this place has become, 0 to 1. Synced by `World`; see `landUse.ts`'s `urbanityFor`. */
+  urbanity = 0;
+  /**
+   * How much of the ground it wants this place has actually got, 0 to 1.
+   * Synced by `World` because the answer needs the terrain's cell size, and
+   * `housing.ts` has to be able to ask it without reaching for the world.
+   * Starts satisfied so nothing is held back before the land system has had
+   * its first pass.
+   */
+  roomSatisfaction = 1;
+  /**
+   * What the country around this place looks like — how much is open and
+   * settleable, how much is somebody's workings, how much could be built on
+   * at all. Synced by `World`; `openness` is the other half of `urbanity`,
+   * and the rest is what makes the answer legible rather than magic.
+   */
+  hinterland: GroundSurvey = EMPTY_HINTERLAND;
+
   constructor(params: {
     id: number;
     position: Vec2;
@@ -148,6 +169,12 @@ export class Settlement {
     this.potential = params.potential;
     this.name = params.name;
     this.origin = params.origin;
+    this.ground = new LandParcel({
+      key: `settlement:${params.id}`,
+      kind: 'settled',
+      origin: this.position,
+      suitabilityOf: settledSuitability,
+    });
   }
 
   /** How big this place has grown, read straight off its development. */

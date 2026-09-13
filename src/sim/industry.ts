@@ -42,12 +42,21 @@ const INDUSTRY_INPUT_LINE = 0.6;
  * a population handful. Population is the one number in that loop nothing
  * feeds back into, so it's the only safe thing to key capacity on.
  */
-function industryCapacityFor(population: number): number {
-  if (population >= 45) return 5;
-  if (population >= 28) return 4;
-  if (population >= 16) return 3;
-  if (population >= 8) return 2;
-  return 1;
+function industryCapacityFor(population: number, urbanity: number): number {
+  const base = population >= 45 ? 5 : population >= 28 ? 4 : population >= 16 ? 3 : population >= 8 ? 2 : 1;
+  // What a place does with its spare hands depends on what kind of place it
+  // is. In a village most of the population is out on the ground it lives
+  // off, and a workshop is one man and his son; in a town that ground is
+  // somebody else's and the hands are indoors. `urbanity` is read off the
+  // country around a place, not off its size (see `landUse.ts`), which is
+  // what keeps this from feeding back on itself the way keying capacity to
+  // tier did — tier is downstream of industry wealth, so tier and capacity
+  // used to grow each other.
+  //
+  // This is the other half of the rural/urban split, and the half that makes
+  // it worth watching: a place with room to grow doesn't just get bigger, it
+  // turns to planks, blocks and tools, which is where the wealth is.
+  return Math.max(1, Math.round(base * (0.55 + 0.65 * urbanity)));
 }
 
 export enum IndustryType {
@@ -102,7 +111,7 @@ export class Industry {
   }
 
   get workerCapacity(): number {
-    return industryCapacityFor(this.owner.population);
+    return industryCapacityFor(this.owner.population, this.owner.urbanity);
   }
 
   get recipe(): IndustryRecipe {

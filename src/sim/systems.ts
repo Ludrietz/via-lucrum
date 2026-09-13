@@ -68,7 +68,7 @@ function nearestIdleTo(
 ): { villager: Villager; route: Route } | null {
   const idleByHome = new Map<Trader, Villager>();
   for (const v of villagers) {
-    if (v.isAvailable && !idleByHome.has(v.home)) idleByHome.set(v.home, v);
+    if (v.isFree && !idleByHome.has(v.home)) idleByHome.set(v.home, v);
   }
 
   let best: { villager: Villager; route: Route } | null = null;
@@ -343,10 +343,9 @@ function haulageDemand(ctx: SimContext): number {
     needed += (rate * roundTrip) / CARRY_CAPACITY;
   }
 
-  const workingTotal = ctx.villagers.filter((v) => !v.isDependent).length;
   // A ceiling, or a civilisation with a long supply line would put literally
   // everyone on the road and produce nothing for them to carry.
-  return Math.max(1, Math.min(Math.round(needed), Math.floor(workingTotal * MAX_LOGISTICS_SHARE)));
+  return Math.max(1, Math.min(Math.round(needed), Math.floor(ctx.villagers.length * MAX_LOGISTICS_SHARE)));
 }
 
 /** How much longer a real road is than the straight line it approximates. */
@@ -377,7 +376,7 @@ export class TransportSystem {
 
   private dispatch(ctx: SimContext): void {
     if (this.cooldown > 0) return;
-    if (!ctx.villagers.some((v) => v.isAvailable)) return;
+    if (!ctx.villagers.some((v) => v.isFree)) return;
 
     // Charged up front, not only on success. `findBestShipment` prices every
     // source against every destination — routes included — so it is by far
@@ -395,7 +394,7 @@ export class TransportSystem {
     // which point eighty of them simply stood idle while the shelves emptied
     // around them. The interval exists so a village's carriers don't set off
     // in one clump, and a busier place genuinely does send more of them.
-    const waiting = ctx.villagers.reduce((n, v) => n + (v.isAvailable ? 1 : 0), 0);
+    const waiting = ctx.villagers.reduce((n, v) => n + (v.isFree ? 1 : 0), 0);
     this.cooldown = DISPATCH_INTERVAL / Math.max(1, Math.min(MAX_DISPATCH_RATE, waiting / WAITING_PER_CARAVAN));
 
     const shipment = findBestShipment({
@@ -603,7 +602,7 @@ export class WorkforceSystem {
    * worker back to the general pool so the next dispatch can pick them up.
    */
   private rebalance(ctx: SimContext): void {
-    if (ctx.villagers.some((v) => v.isAvailable)) return;
+    if (ctx.villagers.some((v) => v.isFree)) return;
 
     const totalTransporters = ctx.villagers.filter((v) => v.role === VillagerRole.Transporter).length;
     if (totalTransporters >= haulageDemand(ctx)) return;
@@ -706,23 +705,19 @@ export class WorkforceSystem {
     // worked by that settlement's own idle people first.
     const nearest = nearestIdleTo(ctx.villagers, targetSite, ctx.routeBetweenSites);
     if (nearest) {
-      // Posting every last worker-capable person, anywhere, would leave
-      // nobody free to physically carry anything, so a growing share is
-      // always held back for logistics — civilisation-wide now, not per
-      // place. A flat "at least one" was tried and reverted: a tiny new
-      // settlement already has several flows going at once (wood, stone,
-      // food, maybe an investment run), and one person can only ever be
-      // running one of them — production was fine, but goods stopped
-      // reliably *arriving*, and population depends on delivered
-      // throughput, not what's sitting produced at the node. Counted
-      // against the *working* population, not raw headcount: dependents
-      // were never going to carry anything either, so they can't count as
-      // part of the reserve. How big that reserve is comes from the roads
+      // Posting every last person, anywhere, would leave nobody free to
+      // physically carry anything, so a growing share is always held back
+      // for logistics — civilisation-wide now, not per place. A flat "at
+      // least one" was tried and reverted: a tiny new settlement already has
+      // several flows going at once (wood, stone, food, maybe an investment
+      // run), and one person can only ever be running one of them —
+      // production was fine, but goods stopped reliably *arriving*, and
+      // population depends on delivered throughput, not what's sitting
+      // produced at the node. How big that reserve is comes from the roads
       // themselves — see `haulageDemand` — so a sprawling network genuinely
       // costs a civilisation the hands to service it.
-      const workingTotal = ctx.villagers.filter((v) => !v.isDependent).length;
       const totalWorkers = ctx.villagers.filter((v) => v.role === VillagerRole.Worker).length;
-      if (workingTotal - totalWorkers <= haulageDemand(ctx)) return;
+      if (ctx.villagers.length - totalWorkers <= haulageDemand(ctx)) return;
 
       nearest.villager.role = VillagerRole.Worker;
       // `release()` already guarantees an idle candidate holds neither

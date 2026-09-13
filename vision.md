@@ -255,7 +255,8 @@ ground truth on any given day, and update this list when it drifts too far.
   terrain-priced routing, abandonment of unused stretches.
 - **Population**: one shared, mobile pool of villagers (not owned per-place);
   home is wherever someone actually settled, decided by where they work, not
-  where they were born; dependents vs. working-age split at birth.
+  where they were born; everyone is available to work as soon as they're
+  born.
 - **Labor market**: one unified priority-based dispatcher for every resource
   node and every industry, weighing worst civilization-wide shortage,
   scaled hard toward food during a genuine famine, with a scaled-back
@@ -326,6 +327,136 @@ ground truth on any given day, and update this list when it drifts too far.
   starvation countdown that starts before a road could possibly exist —
   everywhere else, and every other seed's quirks, are left exactly as rich,
   poor, or awkward as the noise made them.
+
+## Land: places occupy ground, and ground runs out
+
+Until this shipped, nothing on this map took up any room. A place was a point
+with a radius attached, and every radius in the game was a *distance test* —
+how far to draw the glyph, how far to hit-test a click, how far the realm's
+border bulged. A village of sixty and a hamlet of three occupied exactly the
+same amount of the world: none. A forest was a pin, not a wood.
+
+That missing constraint was quietly behind a whole class of behaviour the
+design asks for and could not produce. If growth costs no ground, then nothing
+about *where* a place is can shape *what* it becomes — every village is the
+same village with a different number on it, and the map is scenery. And with
+no area to a deposit, "the town expanded into the forest" is not an event that
+can happen, let alone one with a consequence.
+
+So ground is now held, cell by cell, and by exactly one claimant at a time
+(`landUse.ts`):
+
+- **Settled ground** is what a place is built over and farms from — tofts,
+  closes, in-fields. It grows with population, sub-linearly, which is the
+  whole of what "urbanising" physically means here: the extra people go in
+  denser and buy more of their food than they grow.
+- **Worked ground** is a resource site's area of operation — the stretch of
+  wood actually being felled and replanted, the fields actually ploughed. It
+  grows with the node's level. The node itself stays one point, exactly as
+  before: still where workers muster, still where a transporter loads. What is
+  new is that the production behind that point has somewhere it happens.
+
+Neither is a circle, and neither is drawn as one. A parcel grows one cell at a
+time, always taking the best ground it can reach, so it runs up a fertile
+valley and stops at the water, the crag, and the neighbour's fence. The
+distance term only says roughly how far is reasonable; the terrain says which
+way. This is the same technique the realm's border already used and for the
+same reason — a shape that came out of the country reads as a place, and a
+circle reads as a radius.
+
+### The one asymmetry everything rests on
+
+A town may build over a working. A working may never grow back over a town,
+and no working may take ground from another.
+
+That single rule is the engine. A village hemmed in by its own resource sites
+has two options and both of them cost: expand into the workings it lives on,
+which measurably reduces what they yield (`ResourceNode.productionInterval`
+now divides by `groundQuality`), or stop growing, because houses need ground
+to stand on (`housing.ts`'s `hasRoomToBuild`). Nothing anywhere says "a rural
+village may not become a city". It simply costs what it would really cost, and
+the simulation charges it.
+
+That gate is two readings of one fact, and the second is there because the
+first is nearly unreachable on its own. A parcel only reports `starved` when a
+growth pass finds *nothing* worth taking anywhere on its edge, which needs the
+place walled in on every side at once; a place can be comprehensively out of
+room while still creeping onto the odd poor cell, and the honest signal for
+that is simply failing to keep up with the acreage its own population already
+implies. Ordinary growth never comes near it — parcels lay out ground several
+times faster than population asks for it — so falling behind means genuinely
+losing the race for ground.
+
+### Rural and urban, as a readout of the country
+
+`urbanity` is read off two things, and population is deliberately not one of
+them — population is what this *causes*, via housing and industry, and keying
+it on population too would close that loop on itself the way tier-driven
+industry capacity once did. What it reads is the ground: how much free,
+settleable country surrounds the place, and whether it actually managed to
+take the ground it wanted.
+
+It then does exactly two things, both on systems the player already watches:
+
+- **Industry capacity scales with it** (`industry.ts`). In a village most of
+  the population is out on the ground it lives off and a workshop is one man
+  and his son; in a town that ground is somebody else's and the hands are
+  indoors. This is what turns "room to grow" into "planks, blocks and tools",
+  which is where the wealth is — so an open-country town urbanises *and*
+  specialises upward, and a works-ringed village stays a works-ringed village
+  making raw goods.
+- **Housing stalls when a place is boxed in**, as above. Population levels
+  off, `tier.ts`'s population bar does the rest, and a rural place keeps a
+  rural label without anything having to award it one.
+
+Two hooks, no new subsystem, and the interesting half — that a place's fate is
+decided by the country it was founded in — falls out of them.
+
+### Founding looks at room, not just at ground underfoot
+
+The settlement score gained a `room` term (`settlementSystem.ts`), because
+`terrain` only ever answered "what is this one cell like". A crossroads on a
+perfect acre wedged between a mountain, a lake and three working woods scored
+full marks on `terrain` and had no future. `room` asks the wider question the
+founder actually asks — and since the same reading later decides how urban the
+place becomes, a settlement founded with room around it is a settlement that
+can take it.
+
+### What this also fixed, almost incidentally
+
+A place's click target is now the place. A town covering a quarter of the
+screen with a twenty-pixel hit box in the middle of it was only ever
+defensible while a town covered nothing at all — see `World.placeAt`, kept
+deliberately separate from `siteAt` because a road still anchors on a place's
+*centre* and always should.
+
+### Calibrate these against measurements, not against intuition
+
+The first cut of `urbanity` read 100% at every place in the realm — not
+because anything was broken but because the band was a guess and the
+distribution was nothing like it. Over a parish-sized hinterland of ordinary
+procedural country, openness lands in the eighties and nineties, so a band
+running from 0.25 to 0.70 saturated everywhere and the readout said nothing.
+The same mistake was quietly sitting in the settlement score's new `room`
+term, which was being fed the raw share and therefore contributed nearly its
+full weight at every candidate on the map.
+
+This is the identical lesson `industry.ts`'s `INDUSTRY_INPUT_LINE` records at
+length, and it has now cost this project twice: *a threshold's meaning depends
+entirely on the distribution it is compared against*. Measure what the
+quantity actually settles at before drawing a line across it. The tuning
+harness prints openness, buildable share and works share per place for exactly
+this reason — when these numbers need changing, change them against a run, not
+against a feeling.
+
+### Where this is knowingly a simplification
+
+Only claimed sites hold ground. A deposit beyond the border works nothing,
+which means a town inside the border can quietly sprawl over country a
+frontier offer would one day have wanted. That is left in on purpose: it is a
+real consequence of leaving an offer on the table, and it is consistent with
+"claiming is not exploiting" — but it is a consequence the player currently
+cannot see coming, and it should probably be surfaced before it bites anyone.
 
 ## Failure modes we've already been burned by
 
@@ -444,23 +575,26 @@ before a player does.
   genuinely off making a delivery, mid-trip with cargo and a pledge riding
   on them. Both now filter to workers actually present (`systems.ts`'s
   `isAtPost`) before picking a donor to pull.
-- **Fixing an accounting drift by touching production is worse than the
-  drift.** The population/dependent split (`WORKING_POPULATION_SHARE`) is
-  meant to hold near 30/70 as population rises and falls, but the removal
+- **A ratio you can only correct by touching production is not worth
+  keeping.** The population/dependent split (`WORKING_POPULATION_SHARE`)
+  tried to hold near 30/70 as population rose and fell, but the removal
   side of a shrink event can only safely take whoever's actually idle — and
-  since a dependent can never be anything else, they're almost always the
-  only one idle, so repeated shrink-then-regrow cycles (population's normal
-  state) drove the dependent share toward zero over a long run. The
+  since a dependent could never be anything else, they were almost always
+  the only one idle, so repeated shrink-then-regrow cycles (population's
+  normal state) drove the dependent share toward zero over a long run. The
   tempting direct fix — forcibly vacate a *working* non-dependent's post
   instead, when the ratio calls for it — was tried and immediately produced
   a real death spiral: pulling a farm worker to fix a bookkeeping ratio cut
   food throughput, which shrank the population target further, which pulled
-  another worker. A ratio, however wrong, was never worth risking the
-  production population actually depends on. Fixed by leaving removal alone
-  (still takes whoever's free) and instead banking the imbalance as a debt
-  that leans the next several *births* the other way (`world.ts`'s
-  `dependentDebt`) — corrects the same drift, but only ever through people
-  who don't exist yet, never by touching someone already at work.
+  another worker. A debt ledger (`dependentDebt`) that leaned future births
+  the other way papered over the drift, but the underlying rule was still
+  fighting itself every cycle for a distinction (child vs. adult) the
+  simulation never modeled anywhere else — no ageing, no lifespan, nothing
+  that would make "dependent" mean more than "the person a shrink is
+  allowed to take." Removed the split entirely: every villager is available
+  to work the moment they're born. The labour-starvation and
+  transport-share tests this was protecting against are covered by other,
+  real bottlenecks (housing, haulage capacity) instead of an invented one.
 - **A comfort/development formula that only counts cash wealth.** A solo,
   self-sufficient village (or a settlement with nobody else to trade with,
   and no spare population to staff an industry) can never earn a single
@@ -684,17 +818,19 @@ before a player does.
   more often than that either.
 - **A shrink that could only ever take dependents, and then couldn't take
   anyone.** Removal preferred "a free dependent, else anyone free" — but a
-  dependent is *always* free, so a population oscillating around its food
+  dependent was *always* free, so a population oscillating around its food
   supply ground the dependent share to literally zero, silently inflating
-  the labour force by half against the 70/30 split it is meant to hold.
+  the labour force by half against the 70/30 split it was meant to hold.
   Worse, once every working adult held a post there was nobody free at all
   and nothing could leave: the civilisation froze at forty-four people
   living off food for thirty, indefinitely, with the readout plainly saying
-  so. Removal now prefers whichever side of the split is over-represented
-  (both candidates are people with no job either way), and as a last resort
-  closes an *industry* — discretionary work by definition — rather than
-  letting the shortfall stand forever. Taking someone off a resource node
-  remains forbidden; that was tried before and is a real death spiral.
+  so. The dependent/working split has since been removed altogether (see
+  above), which also removes this failure mode at the root — there is no
+  ratio left to grind toward zero. Removal still prefers whoever's free, and
+  as a last resort closes an *industry* — discretionary work by definition —
+  rather than letting the shortfall stand forever; taking someone off a
+  resource node remains forbidden, since that was tried before and is a
+  real death spiral.
 - **The player could not reach toward anything.** A design gap rather than a
   bug, and it quietly capped the whole game. A road had to start *and end*
   on something already known; sites only became visible inside an influence

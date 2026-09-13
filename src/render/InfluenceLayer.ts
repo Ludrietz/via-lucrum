@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { closestPointOnPolyline, type Vec2 } from '../sim/geometry';
 import type { World } from '../sim/world';
-import { type Bounds, traceContours } from './marchingSquares';
+import { chaikin, jitterLoop, type Bounds, traceContours } from './marchingSquares';
 import { COLORS, DEPTH } from './theme';
 
 /** How finely the field is sampled, in world units, before being scaled by extent. */
@@ -174,30 +174,4 @@ export class InfluenceLayer {
     const margin = LINK_RADIUS + 40;
     return { x0: x0 - margin, y0: y0 - margin, x1: x1 + margin, y1: y1 + margin };
   }
-}
-
-/** Corner-cutting subdivision: a cheap way to round off the grid's stairsteps. */
-function chaikin(points: Vec2[], iterations: number): Vec2[] {
-  let pts = points;
-  for (let it = 0; it < iterations; it++) {
-    const next: Vec2[] = [];
-    const n = pts.length;
-    for (let i = 0; i < n; i++) {
-      const p0 = pts[i];
-      const p1 = pts[(i + 1) % n];
-      next.push({ x: p0.x * 0.75 + p1.x * 0.25, y: p0.y * 0.75 + p1.y * 0.25 });
-      next.push({ x: p0.x * 0.25 + p1.x * 0.75, y: p0.y * 0.25 + p1.y * 0.75 });
-    }
-    pts = next;
-  }
-  return pts;
-}
-
-/** Deterministic, position-based wobble, so the border reads as drawn rather than computed. */
-function jitterLoop(points: Vec2[], strength: number): Vec2[] {
-  return points.map((p) => {
-    const nx = Math.sin(p.x * 0.014 + p.y * 0.021) + Math.sin(p.x * 0.037 - p.y * 0.009) * 0.6;
-    const ny = Math.sin(p.x * 0.019 - p.y * 0.027) + Math.sin(p.x * 0.008 + p.y * 0.033) * 0.6;
-    return { x: p.x + nx * strength * 0.4, y: p.y + ny * strength * 0.4 };
-  });
 }

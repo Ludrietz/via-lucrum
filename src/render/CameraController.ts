@@ -17,7 +17,7 @@ const ZOOM_STEP = 0.0016;
  */
 const MIN_ZOOM = 0.12;
 /** The colour of country nobody has been to yet. Shared with `main.ts`'s canvas clear so there's no seam at the edges. */
-export const UNEXPLORED_COLOR = '#c2b18d';
+export const UNEXPLORED_COLOR = '#746a45';
 
 /**
  * Drag to pan, wheel to zoom towards the cursor. Zoom eases so the map never

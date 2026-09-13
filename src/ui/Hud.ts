@@ -10,9 +10,11 @@ import {
 } from '../sim/economy';
 import { developmentRate } from '../sim/development';
 import type { Vec2 } from '../sim/geometry';
-import { housingCapacity, nextHousingThreshold } from '../sim/housing';
+import { hasRoomToBuild, housingCapacity, nextHousingThreshold } from '../sim/housing';
+import { urbanityLabel } from '../sim/landUse';
 import type { ResourceNode } from '../sim/resourceNode';
 import type { Site } from '../sim/roadNetwork';
+import { METRES_PER_UNIT } from '../sim/scale';
 import { Settlement } from '../sim/settlement';
 import { TERRAIN_LABELS } from '../sim/terrain';
 import { TIER_LABELS, TIER_THRESHOLDS } from '../sim/tier';
@@ -166,6 +168,35 @@ export class Hud {
     return this.row('Housing', `${capacity} <span class="note-inline">${note}</span>`);
   }
 
+  /**
+   * The ground a place actually sits on, and what the country around it is
+   * letting it become.
+   *
+   * Three facts, in the order they cause each other: how much it has laid out,
+   * whether it has anywhere left to lay out (the one thing that can stop its
+   * housing growing), and what it has therefore turned into. Without this the
+   * land system would be invisible except as an unexplained ceiling on
+   * population, which is exactly the kind of correct-but-unreadable number
+   * this game is supposed to refuse.
+   */
+  private landPanel(trader: Trader): string {
+    const { ground } = trader;
+    const cellSize = this.world.terrain.cellSize;
+    const held = hectares(ground.area(cellSize));
+    const wanted = hectares(ground.targetArea);
+    const roomNote = !hasRoomToBuild(trader)
+      ? '<span class="need">no room to build</span>'
+      : ground.satisfaction(cellSize) < 0.95
+        ? '<span class="note-inline">laying out more</span>'
+        : '<span class="note-inline">settled</span>';
+
+    return `<div class="note">LAND</div><div class="stats">
+      ${this.row('Held', `${held} ha <span class="note-inline">of ${wanted}</span> ${roomNote}`)}
+      ${this.row('Room around', `${Math.round(trader.hinterland.openness * 100)}% <span class="note-inline">open &middot; ${Math.round(trader.hinterland.worked * 100)}% worked</span>`)}
+      ${this.bar(urbanityLabel(trader.urbanity), trader.urbanity, true)}
+    </div>`;
+  }
+
   /** Wealth: the running total, and how fast it's currently coming in — what tier now actually tracks. */
   private wealthPanel(trader: Trader): string {
     const income = wealthIncomePerMin(trader);
@@ -182,12 +213,13 @@ export class Hud {
       <div class="stats">
         ${this.row('Population', `${village.population} <span class="note-inline">sustainable ~${sustainable}</span>`)}
         ${this.housingRow(village)}
-        ${this.row('Working', `${this.world.workingPopulationAt(village)} <span class="note-inline">of ${village.population} — the rest are dependents</span>`)}
         ${jobs}
         ${this.row('Available', String(this.world.idleCountAt(village)))}
         ${this.row('Transporters', String(this.world.transporterCountAt(village)))}
         ${this.row('Holds', `${village.footprintRadius} <span class="note-inline">of the realm's ground</span>`)}
       </div>
+      <div class="divider"></div>
+      ${this.landPanel(village)}
       <div class="divider"></div>
       ${this.developmentPanel(village)}
       ${this.wealthPanel(village)}
@@ -300,6 +332,28 @@ export class Hud {
       </div>`;
   }
 
+  /**
+   * The ground this works actually operates over, and what it is doing to its
+   * output.
+   *
+   * The second half only appears when there is something to say. A works with
+   * the run of its own valley is at full yield and the row would be noise; a
+   * works at three-quarters is a works somebody has built over, and that is
+   * the single most useful thing the panel can tell the player about why the
+   * numbers moved.
+   */
+  private workingsRow(node: ResourceNode): string {
+    if (!node.isClaimed) return '';
+    const cellSize = this.world.terrain.cellSize;
+    const held = hectares(node.ground.area(cellSize));
+    const wanted = hectares(node.workedArea);
+    const penalty =
+      node.groundQuality < 0.97
+        ? ` <span class="need">&minus;${Math.round((1 - node.groundQuality) * 100)}% yield</span>`
+        : '';
+    return this.row('Workings', `${held} ha <span class="note-inline">of ${wanted}</span>${penalty}`);
+  }
+
   private nodePanel(node: ResourceNode): string {
     const perMinute = (node.productionRate * 60).toFixed(1);
     const route = this.world.routeTo(node);
@@ -331,6 +385,7 @@ export class Hud {
         ${this.row('Production', node.workers.length > 0 ? `${perMinute} / min` : 'idle')}
         ${this.row('Stored', `${node.stored} / ${node.capacity}`)}
         ${this.row('Ground', TERRAIN_LABELS[this.world.terrain.typeAt(node.position)])}
+        ${this.workingsRow(node)}
         ${route ? this.row('Route', `${Math.round(route.length)} &middot; ${tier}`) : this.row('Route', 'none')}
         ${route ? this.row('Going', `&times;${route.difficulty.toFixed(2)}`) : ''}
       </div>
@@ -407,6 +462,7 @@ export class Hud {
       ['junction', 'Junction'],
       ['resources', 'Resources'],
       ['terrain', 'Ground'],
+      ['room', 'Room to grow'],
       ['quality', 'Road'],
     ];
 
@@ -441,7 +497,6 @@ export class Hud {
       <div class="stats">
         ${this.row('Population', `${Math.round(settlement.population)} <span class="note-inline">sustainable ~${sustainable}</span>`)}
         ${this.housingRow(settlement)}
-        ${this.row('Working', `${this.world.workingPopulationAt(settlement)} <span class="note-inline">of ${settlement.population} — the rest are dependents</span>`)}
         ${jobs}
         ${this.row('Available', String(this.world.idleCountAt(settlement)))}
         ${this.row('Transporters', String(this.world.transporterCountAt(settlement)))}
@@ -450,6 +505,8 @@ export class Hud {
         ${this.row('Age', age === 1 ? '1 day' : `${age} days`)}
         ${this.row('Holds', `${settlement.footprintRadius} <span class="note-inline">of the realm's ground</span>`)}
       </div>
+      <div class="divider"></div>
+      ${this.landPanel(settlement)}
       <div class="divider"></div>
       ${this.developmentPanel(settlement)}
       ${this.wealthPanel(settlement)}
@@ -478,4 +535,16 @@ export class Hud {
   private row(label: string, value: string): string {
     return `<div class="row"><span class="label">${label.toUpperCase()}</span><span class="value">${value}</span></div>`;
   }
+}
+
+/**
+ * World units² as hectares, at `scale.ts`'s four metres to the unit.
+ *
+ * The panel quotes acreage rather than a radius because acreage is what a
+ * parcel actually is — an irregular patch of held cells — and because a
+ * hectare is a figure a player can weigh against a real village. A radius
+ * would be both a lie about the shape and meaningless without one.
+ */
+function hectares(areaInUnits: number): number {
+  return Math.round((areaInUnits * METRES_PER_UNIT * METRES_PER_UNIT) / 10_000);
 }
