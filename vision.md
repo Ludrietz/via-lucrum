@@ -265,26 +265,51 @@ ground truth on any given day, and update this list when it drifts too far.
   shipment right now" decision across node production, trader surplus, and
   node investment, discounted (not hard-gated) by whether something's
   actually needed.
+- **Convoys — porter, carter, caravan** (`villager.ts`): how much one person
+  moves in one trip is decided by the road, not by the person. The *weakest*
+  stretch of the delivery route, plus a minimum haul distance, picks the
+  class: a track carries a man with a sack (3), a packed road a cart (9), a
+  made trunk road a train of them (24), at a modest cost in pace. This is
+  deliberately not a job — nobody is hired as a caravaneer and the labour
+  market is never told, because every stall this simulation has produced came
+  from adding another claimant to the same small pool of people. It is the
+  loop the road system now turns on: use packs the ground, packed ground
+  carries heavier loads, heavier loads pack it harder still. Bounded because
+  wear per *unit of goods moved* rises monotonically with class (2.80 → 3.30
+  → 3.82), so upgrading a route can never make it decay — which would have
+  been an oscillation — and because there is only ever as much to carry as
+  the country grows. Weakest-link rather than average is what makes a
+  half-finished trunk road behave properly: it does nothing until the last
+  gap is closed, then everything at once.
 - **Resource nodes**: level up two independent ways — worked enough
   (lifetime collected) and invested-in enough (a shipped-in resource) —
   taking the lower of the two, so a node can stall on logistics even while
   it's being worked hard.
-- **Industries** (Sawmill, Masonry, Smithy): convert raw goods to processed
-  ones, staffed only once a place has real spare population, inert until
-  there's genuine demand for their output. Worker capacity scales with the
-  owner's own current population, not its tier — tier is itself downstream
-  of an industry's wealth, so keying capacity to tier let the two feed each
-  other into a small population running an oversized industry.
-- **Wealth & development**: wealth earned from industry output and genuine
-  exports (never from raw production landing at a trader); tier is a
-  function of population *and* wealth-per-capita comfort, so a wealthy ghost
-  town and a crowded but unproductive place both fail to develop — and,
-  separately from the development *score*, a place's population has to
-  directly clear each tier's own bar too, so a tiny population propped up by
-  legacy wealth can't wear a city-sized label its headcount doesn't support.
-- **Housing**: a population cap per place that grows on its own — via
-  accumulated "under pressure" time, not a resource draw — when a place is
-  genuinely crowded, and stops once relieved.
+- **Industries** (Sawmill, Masonry, Smithy, Joinery, Bakery): convert raw goods to
+  processed ones, and processed ones into finished ones. A workshop has to be
+  *built*, out of material carried in, and only gets built where the realm is
+  short of the worked good and this place has the inputs going spare — so both
+  whether a sawmill exists and how many hands it holds are consequences of
+  supply and demand rather than of a table. Two of the four want more than one
+  thing: a smithy needs ore *and* fuel, a joinery sawn plank *and* finished
+  tools, so neither can stand anywhere both chains do not reach. That is what
+  makes a place specialise instead of quietly becoming a copy of every other
+  place. See "Building" below.
+- **Crafts**: a villager follows a trade, gets better at it with the years,
+  and loses most of that on taking up another — so the labour market pays a
+  price for churn and a realm settles into specialists on its own
+  (`craft.ts`).
+- **Wealth & development**: wealth earned from the *margin* an industry adds
+  (output value less the input it consumed) and from genuine exports, never
+  from raw production landing at a trader; a place's development is the
+  standing fabric it has built and keeps in repair, and its tier the lower of
+  what that fabric and its own headcount support — so a wealthy ghost town
+  and a crowded but unbuilt place both fail to develop.
+- **Housing & building**: what a place can house is read off dwellings it
+  actually built, out of wood, stone, planks or blocks drawn from genuine
+  surplus; worked material goes further and lasts longer; upkeep is a
+  standing charge that keeps a big place a permanent market for the
+  processing economy (`construction.ts`).
 - **Settlements**: emerge from sustained, meaningful road traffic near real
   resource work (never from pure traffic with no occupation nearby), inherit
   their first residents from whoever's already working nearby when they
@@ -458,6 +483,216 @@ real consequence of leaving an offer on the table, and it is consistent with
 "claiming is not exploiting" — but it is a consequence the player currently
 cannot see coming, and it should probably be surfaced before it bites anyone.
 
+## Building: what a place is, is what it built
+
+The three questions this answers used to be answered by three numbers that
+nothing in the world could feel: a development score that accrued for being
+comfortable, a housing ladder that accrued for being crowded, and an industry
+capacity table keyed on how many people happened to live somewhere. All three
+are gone. A place now has exactly one thing that makes it what it is — its
+**fabric**: the houses and workshops it has actually put up, bought with
+material somebody carried down a road the player drew.
+
+**Nothing is eaten that isn't eaten.** People eat grain and burn firewood.
+That is the whole of subsistence. Stone, iron and every worked good are drawn
+by *building*, and by nothing else. This is the single change that made a
+processing economy possible at all, and the diagnosis is the most instructive
+thing in this section, because everything looked correct right up until you
+measured it: every raw good used to be a per-capita sink at a rate that scaled
+with population, while the stock a place *wants* scales with population too —
+so a shelf converged to its own buffer and stayed there, by construction,
+forever. An industry may only work material above `WORKING_RESERVE` of that
+buffer. Measured on seed 1234 at day 61 with a hundred residents: **one plank
+existed in the entire realm**, no blocks, no tools, and the tools shortage had
+read 1.00 without interruption since the first tick. The gates were not too
+strict. There was structurally never anything spare to put through them, no
+matter how rich the country got. A villager chewing on a block of limestone
+was never believable anyway.
+
+**Worked goods are worth building with, and that is their reward.** Two wood
+make a plank and a plank lays three fabric; two stone make a block worth 3.6.
+So a sawmill multiplies a forest's worth by half again — in houses raised, in
+trees *not* hauled, and therefore in hands not spent walking. A place built in
+plank and dressed stone also decays more slowly and reads grander for the same
+acreage. The reward for refining is paid in the two currencies this game
+actually runs on, labour and road traffic, rather than in a score.
+
+**Demand is what somebody actually wants.** A place's appetite for material
+is how much building it has in front of it, not how many people live there.
+That one line is what makes the market real: a finished capital sitting on
+ninety-six planks reads as *surplus* and ships them to the five hamlets trying
+to build, where a flat per-capita target had it reading as the hungriest place
+in the realm because it was the biggest. Nothing had to be added to the trade
+system to get this; it was already asking the right question and being told
+the wrong answer.
+
+**A place has to keep what it built.** Fabric decays, and upkeep is a first
+charge on a place's effort — before anything new is begun. That is what keeps
+the processed economy a permanent market rather than a phase a realm passes
+through, and it is what stops a place coasting on one good decade. A town that
+loses its timber supply genuinely shrinks. The floor (`FREE_FABRIC`) is what
+keeps that from being a death spiral at the bottom: huts people put up out of
+what is lying about need no supply line and cannot be lost.
+
+**And a workshop is a building.** A sawmill exists where the realm is short of
+planks *and* this place has timber going spare — supply and demand, both
+halves required — and it exists by being built, out of material, like
+everything else. This replaced the last table in the simulation that handed
+out economic capacity by category: a village of sixteen could host three
+sawyers and one of fifteen could host two, on a map where nothing looked any
+different either side of the line. The population floor that gated industry is
+gone too, and nothing replaced it: a pair of huts with no timber surplus has no
+sawmill to staff, not because a rule forbids it but because nobody ever built
+one.
+
+**Bread is the food side of the same idea.** A county with more farmland than
+it could eat had nowhere to put the surplus — food is not a building material,
+so the only sink was the population already there and the excess decayed off
+the shelf. Two measures of grain and the fuel to fire an oven make one loaf,
+and a loaf feeds three: baking returns half again as much eating as the grain
+went in with, exactly as milling returns half again as much building as the
+timber did. It buys a second thing that may matter more in a game about roads:
+grain is bulky, and feeding a town in bread is a third of the cart-loads of
+feeding it in grain. A realm that bakes near its farms and ships loaves gets
+those hands back for something else. And because a bakery wants fuel as well
+as grain, it lands in both the places it should — out among the farms where
+the grain is spare, and in a town where grain from a dozen farms is already
+being centralised and the firewood is already arriving.
+
+
+### People take up a trade
+
+A villager was a body. The labour market posted whoever was nearest to
+whatever the realm was shortest on, and took them back out the moment some
+other good's shortage crept a fraction ahead — because nothing in the
+simulation knew the difference between a woodcutter of thirty years and a man
+who was hoeing turnips this morning. The only brake was one flat margin that
+had to be small enough to let a real famine win and large enough to stop two
+openings trading the same pair of hands forever. It cannot be both.
+
+A **craft** (`craft.ts`) fixes that where the problem lives, in people rather
+than thresholds. Working a trade makes you better at it, worth real output.
+Changing trade throws most of that away. So the labour market has to want it
+more the deeper someone is in — a green hand moves for very little, a master
+only for a famine — and a realm settles into specialists without anything
+deciding that it should. A site gives up its greenest hand first, and an idle
+tradesman is worth going out of the way to fetch back to their own trade.
+
+The general lesson, and it is the one this project keeps paying for: when a
+threshold has to be two different values at once, it is answering two
+different questions, and the fix is two rules rather than a better number.
+That diagnosis produced the split between subsistence and building, the split
+between expanding and maintaining, and the craft system, all in one pass.
+
+### Two kinds of water, and only one of them answered
+
+A river on an authored map is not wet cells in the terrain raster. It is a
+*line with a width* (`river.ts`), because a real river is usually narrower
+than a terrain cell and rasterising it would either lose it or turn a stream
+into a lake. That is the right model and it is not the bug.
+
+The bug was that only one system ever asked it. `canLayAlong` consults the
+river network directly, so roads have always priced their crossings correctly.
+Everything else asked `terrain.isPassable`, which is dry along every river in
+the game. Measured on the Kuttenberg pack: ninety-two rivers, and of the wet
+points found around the founding village, **every single one read as dry
+ground to the raster**. The consequences were exactly as invisible as that
+suggests:
+
+- **No bridge was ever drawn over a river.** The road renderer decides which
+  stretches are decked by asking whether the ground beneath is passable, so
+  roads crossed rivers as though they were not there — which is precisely the
+  reading the bridge mechanic exists to correct, and the reason the crossing
+  did not look like the expensive, deliberate thing it is.
+- **Parcels laid their fields straight across.** A village's closes and a
+  wood's cutting ground scored cells off the terrain sample alone, so the
+  river was not an argument about where a place could spread; it was not
+  anything at all.
+
+Both now go through `RiverNetwork.widthAt`, which answers the question the
+raster cannot. The general lesson is the familiar one in a new place: when a
+fact about the world lives in two representations, every consumer has to be
+able to ask about both, or the quieter representation silently stops existing
+for everything except whoever wrote it.
+
+While fixing it, water stopped being *impossible* for a parcel and became
+merely dear — the same correction roads got when they learned to bridge. A
+town may now straddle its own river once it has taken the dry ground either
+side, which is what towns on rivers actually do; a working may not, because a
+field cannot be ploughed through running water. And clearing gained a price:
+`clearingPenalty` scales a cell's worth by the timber standing on it, so a
+village prefers scrub to old woodland and pays real acreage for the wood it
+fells — except a forester, who is not clearing at all and for whom dense
+timber is the asset.
+
+That change also caught a latent trap worth recording. Settlement founding
+gated on `terrain > 0`, which was only ever the same test as "can anything
+stand here" because water happened to score exactly zero. Making water dear
+rather than forbidden would have allowed a town to be founded on open water.
+Suitability is a preference; existence is a different question, and the gate
+now asks the one that means what it says.
+
+## Prices, not gates: what actually limits the economy
+
+A recurring question worth having a written answer to: can this economy
+develop however it turns out to be most efficient, or is it walking inside a
+fence of constants? Both, and the distinction that matters is **whether a
+number is a price or a gate**.
+
+A *price* is a term in a score. It says "this is worth less than that", and
+anything sufficiently valuable can outbid it. `laborPriority`'s famine bonus,
+`routeScore`'s distance term, `REASSIGN_MARGIN`, the investment discounts in
+`trade.ts` — all prices. The economy is free to do the expensive thing when
+the expensive thing is worth it, which is the whole point.
+
+A *gate* is an early `return`. Nothing outbids it. Every gate is a statement
+that some outcome is forbidden regardless of how much the simulation would
+like it, so each one needs to be saying something true about the world rather
+than something convenient about the code.
+
+The gates that remain, and what each claims:
+
+- **A works only gets so big** (`MAX_WORKS_SLOTS`). A mill is a building, not
+  an industry. A realm wanting more planks than one mill can cut has to find
+  somewhere else worth putting one — which is why industry spreads across a
+  realm instead of piling into the capital.
+- **A deposit only holds so many hands** (`NODE_LEVELS`). The seam is only so
+  wide. Measured at day 151 the realm was using roughly four fifths of its
+  total node capacity, so this is close to binding and worth watching.
+- **A place needs ground to build on** (`hasRoomToBuild`). This is the land
+  system, and it is the intended brake on a valley that has run out of valley.
+- **A civilisation earns its next village** (`POPULATION_PER_PLACE`). In the
+  long run this pins settlement count at about population over nine, which is
+  a real constraint on how the realm spreads and is doing so deliberately —
+  the alternative is scattering hamlets nobody will ever fill.
+- **Nothing settles on top of a works, or on its neighbour's doorstep**
+  (`resourceExclusion`, `minimumSpacing`). Geometry.
+- **Someone has to be free to carry** (`haulageDemand` in
+  `WorkforceSystem.post`). The most suspect one on this list: it is derived
+  from real quantities (production rate, route length, Little's law) but it
+  prices only *node-to-trader* trips, and the trade system also runs
+  trader-to-trader redistribution and node investment runs. See the open
+  entry about goods piling up.
+
+And two that were measured and turned out not to be doing what they looked
+like they were doing:
+
+- **The dispatch interval** (`MAX_DISPATCH_RATE`) reads like a hard ceiling on
+  how much trade a civilisation can conduct, and the comment above it records
+  a previous version that genuinely was one. Raised fivefold on seed 1234 over
+  150 days it moved nothing worth reporting: 356 residents either way, 66
+  carriers against 70, wealth within three percent. It is a budget on how often
+  an expensive question gets asked, and at present the answer is not what the
+  economy is short of.
+- **The stand-in player's appetite gate** was, and it was pointed the wrong
+  way. See the failure-mode entry; this one is in the harness rather than the
+  game, which made it worse rather than better.
+
+The working rule going forward: reach for a price first. If a gate is genuinely
+needed, write down what fact about the world it asserts, and check by
+measurement whether it binds — a gate nobody ever reaches costs nothing and a
+gate everybody sits against is running the economy.
+
 ## Failure modes we've already been burned by
 
 These aren't hypothetical — every one of these has actually happened during
@@ -465,6 +700,143 @@ development, been diagnosed, and been fixed (or is being actively managed).
 Keep this list current; it's the sharpest tool for catching a regression
 before a player does.
 
+- **The test harness's stand-in player stopped playing whenever the economy
+  did well, and it silently graded every experiment.** `surveyor.ts` refused
+  to connect any site whose good scored under 0.5 on its own appetite scale,
+  and that scale starts at 0.2 for stone and iron — so an ore deposit needed a
+  realm-wide shortage of about 0.35 before a "measured" player would run a
+  road to it. The consequence is the nastiest shape a measurement bug can
+  take: **any change that genuinely improved supply pushed shortages down,
+  which switched expansion off, which showed up in the report as the change
+  having broken the game.** Measured directly — the same seed, the same 150
+  days, a change that took iron shortage from 1.00 to 0.22 — connected
+  deposits went from seventy-three to twenty-two, settlements from
+  thirty-two to thirteen, and two thousand Expansion Capacity sat banked with
+  nothing bought. Two separate experiments were run and drew the wrong
+  conclusion before the cause was found, and they had produced byte-identical
+  output, which is what finally gave it away: whatever those runs were
+  measuring, it was not the thing being varied.
+
+  Fixed by deleting the threshold and leaving appetite as what it always
+  should have been, a weight on *which* site to connect next. The judgement
+  the gate was reaching for — do not connect a site the realm cannot service
+  — already exists as `strained`, and that one asks about the network rather
+  than about whether the larder happens to be full this week.
+
+  Two lessons. A harness whose bias points the same direction every time is
+  worse than no harness, because the bias is invisible in the columns and
+  reads as a result. And the "player" in a playtest harness needs the same
+  scrutiny as the simulation: it is a decision-making agent inside the
+  experiment, not part of the apparatus.
+
+- **A cart needed a road firmer than the model says ground can get, so
+  nothing ever used one.** The convoy ladder priced every rung as a fraction
+  of `ROAD_DEVELOPED` (18), which put a carter's requirement at 5.4 — above
+  `WEAR_FULL` (4.5), the wear at which the simulation itself says soil has
+  finished packing and stops changing. Measured on seed 1234 at day 120,
+  across every connected deposit's road home: weakest-stretch wear ran p10
+  0.00, median 0.38, p90 4.08. **Fifty-seven of sixty-one hauls were long
+  enough to want a cart and could not have one**, and the realm ran forty
+  porters averaging a two-thousand-seven-hundred-unit round — the exact
+  "why is nobody using a waggon" the whole convoy system was built to avoid.
+
+  Fixed by asking the two rungs against the two scales this project had
+  already separated for precisely these two meanings. A **cart** needs firm
+  ground, which is a question about soil, so it is priced against `WEAR_FULL`
+  and saturates where soil does. A **waggon train** needs standing in the
+  network rather than dry mud, so it stays on `ROAD_DEVELOPED` and keeps
+  answering long after the ground has stopped changing. Afterwards: median
+  edge wear 0.78 → 3.23, porters' mean route halved to 1273 while carters took
+  over the long hauls at 2526, food actually arriving up 17% and the worst
+  food shortage 0.43 → 0.26.
+
+  Two smaller things fell out of the same measurement. The class was decided
+  by the road alone while the *load* was capped separately by whatever the
+  source had spare, so a caravan regularly formed to carry four units: a
+  waggon train harnessed up to move a porter's load, at three quarters of a
+  porter's pace, packing the road no harder for it — strictly worse than
+  walking, every time. And a site's own workers had all but stopped carrying
+  their backlog out: the fallback was a global serial queue (one worker
+  anywhere in the realm every three hours, fine for six deposits and no rate
+  at all for sixty) whose timer additionally reset whenever *anyone* claimed a
+  single unit, which on a long haul is most of the time. That one matters
+  beyond its own throughput, because a distant deposit generates no traffic
+  until somebody walks its road, and settlements grow out of traffic near real
+  work.
+
+- **A whole economic layer that could never once run, because two correct
+  rules multiplied.** Demand for every raw good was per-capita and scaled with
+  population; the stock a place *wants* was also per-capita and scaled with
+  population; an industry may only work material above a fraction of that
+  want. Each of those is defensible alone. Together they mean a shelf
+  converges to its own buffer and stays there no matter how rich the country
+  gets, so "genuine surplus" is a set that is *always empty*. Measured on seed
+  1234 at day 61 with a hundred residents and fourteen worked deposits: one
+  plank in the entire realm, no blocks, no tools, and a tools shortage that
+  had read 1.00 since the first tick. Three separate passes had already been
+  spent loosening the industry gates, each correctly identifying a gate and
+  none of them able to help, because the gate was not the problem — the
+  distribution it was compared against was. Fixed by making people eat only
+  what people eat (`SUBSISTENCE`) and letting building draw the rest. The
+  general form: when a threshold never fires, plot the quantity before you
+  move the line.
+- **Wealth minted rather than earned, and invisible for as long as nobody
+  earned any.** An industry was credited the full `BASE_VALUE` of its output
+  and charged nothing for the input it consumed. Harmless while industries
+  never ran; the single largest number in the economy the moment they did —
+  wealth income went from 51 a minute to 516, and because Expansion Capacity
+  is driven substantially by prosperity, the realm began taking in frontier
+  sites about three times as fast on identical production. Fixed by crediting
+  the margin. Worth noting that the *symptom* would have read as "expansion is
+  too cheap" and invited a tuning pass on `expansion.ts`, which was blameless.
+  A dormant subsystem can hide a bug indefinitely; switching one on is a good
+  moment to re-read everything downstream of it.
+- **One threshold asked to be two, and moving it just trades the failures.**
+  A single occupancy figure decided both "is this place crowded enough to
+  build more houses" and "is it worth keeping the houses it has". At 0.55 a
+  half-empty capital let its roofs fall in — a hundred and twenty-five places
+  for fifty-eight residents, losing fabric daily with material sitting on its
+  own shelves. At 0.35 the same capital built two hundred and fifty-seven
+  places for ninety people and swallowed every scrap of material in the realm:
+  it never built a masonry or a smithy at all, and the deposits the
+  civilisation managed to connect *fell from twenty to eight*. The fix is not
+  a third number between them. Upkeep is a first charge on effort and asks no
+  question; expansion keeps the high bar. Same shape as `WEAR_FULL` above, and
+  worth recognising by the symptom: if a threshold is wrong in both directions,
+  it is answering two questions.
+- **The worst tail standing in for the distribution.** `worksWant` first asked
+  "how short is the worst-off place in the realm of tools?" to decide whether
+  a place should build a smithy. One three-person hamlet founded last week
+  with an empty shelf pinned that at 1.00 permanently, so *every* place in the
+  civilisation wanted a smithy: eleven of fourteen had built one by day 91,
+  several of them villages of six sitting on fifteen tools with nobody to sell
+  them to. The labour market asks the worst-case question on purpose — a
+  famine anywhere is an emergency everywhere — but "where should a workshop
+  stand" is the opposite kind of question. Third time this exact trap has been
+  hit (see the saturation entry below); the tell is a realm-wide figure that
+  never comes down.
+
+- **One constant answering two questions, and every road in the realm
+  clamped at maximum because of it.** `WEAR_FULL` (4.5) meant both "the
+  ground is as packed as it gets" and "this is the scale a road's width and
+  colour are drawn against". Those are not the same quantity and they had
+  drifted an order of magnitude apart: measured on seed 1234 at day 120, the
+  *median* live road carried wear of 5.7 and the busiest 19.2 — so from
+  roughly the first week of any game, every road on the map was pinned at the
+  top of its own scale. That is the real reason roads all looked alike, why
+  nothing ever read as "a path that grew into a road", and why successive
+  passes on the *drawing* of roads kept failing to fix it: the renderer had a
+  twenty-fold dynamic range available and was being handed a saturated one.
+  Fixed by splitting the constant — `WEAR_FULL` keeps the physical meaning
+  and keeps its early clamp (a well-used lane really is as easy to walk, and
+  as good to settle beside, as a highway, and `wearEffort`/`routeScore`/
+  settlement emergence are all tuned that way), while `ROAD_DEVELOPED` (18)
+  is the traffic scale that appearance and convoy class are read against.
+  The general lesson is the one this list keeps relearning: when a number is
+  used by two systems for two different reasons, it will eventually be right
+  for neither, and the symptom shows up in the system nobody was editing.
+  *Calibrate against a measurement — the medians above came from the headless
+  playtest, not from looking at the screen.*
 - **A world with no stated scale, and a walking speed a fifth of what it
   should have been.** Every distance in the game was tuned by feel against
   every other distance, which is fine until something outside the game has an
@@ -490,6 +862,27 @@ before a player does.
   against reality has to say what its units mean, or a number can sit four
   and a half times wrong for the whole life of a project and read as a
   balance problem every time it is looked at.
+- **A correct simulation running at an unreadable speed.** The companion
+  mistake to the one above, and it only surfaced once that one was fixed.
+  With `WALK_SPEED` corrected to a day's journey, and the wall clock still
+  feeding `World.update` one in-game hour per real second, a villager crossed
+  the whole Kutná Hora basin in a few seconds. Nothing was out of balance —
+  the model was right and the projector was running fast.
+
+  The tempting fix is to slow walking down again, which would put the units
+  back to being wrong. The actual fix is one number outside the model:
+  `REAL_SECONDS_PER_HOUR` (`scale.ts`, applied in `GameScene` and nowhere
+  else). Every rate in the simulation is per in-game hour, so stretching the
+  hour slows walking, production, wear and migration together and changes no
+  balance whatsoever; the existing 10x button lands back on the old pace.
+
+  Two things had to follow it, both of the same kind: anything that had been
+  written in seconds while meaning hours had to say which it meant (the
+  road draw-in flourish), and the villager stride animation had to be paced
+  off ground covered instead of elapsed time — time-paced legs churn at a
+  fixed rate no matter what the body is doing, and came adrift the moment the
+  clock changed. Pacing them by distance also makes a villager labouring up a
+  hill take slower steps for free.
 - **0-population settlements/cities.** Tier or existence decoupled from
   actual residents. Caught a second, subtler instance of this: industry
   worker *capacity* was keyed to a trader's tier, but tier is itself driven
@@ -1168,6 +1561,78 @@ before a player does.
   in four bands are paid for sixty times a second. Halving the ribbon vertices
   changed nothing at all, because the cost is in the number of fills and not
   their size — worth knowing before optimising the obvious thing twice.
+- **Asking the most expensive question in the game from scratch, several
+  times a second, to produce one answer.** By day 75 on seed 1234 a tick took
+  **49ms** — three frames — and the realm was a handful of villages. It was
+  not the renderer and it was not any one system: it was that four things
+  which are *properties of the world* were being recomputed as though they
+  were properties of the question being asked.
+
+  `findBestShipment` weighs every source against every need, which is the
+  design and is right (see "Trade is one continuous decision"). But every
+  pairing asked `routeBetween` for a fresh graph search, every edge that
+  search relaxed re-averaged the wear along that road's whole polyline, every
+  route it returned deep-copied a few hundred points and built a
+  cumulative-length table, and the world separately ran two hundred-odd
+  single-source searches out of the *same* village to answer one question
+  about reachability. Nothing was quadratic in an obvious place; five
+  linear-looking things were multiplying.
+
+  The fixes are all the same fix, stated four times — **measure a thing where
+  it lives, once, and let everyone read it**:
+
+  - a road's mean wear belongs to the road (`RoadEdge.wear`, stamped against
+    `TrafficField.revision`), not to whoever asked the pathfinder;
+  - a route between two places belongs to the network, cached for as long as
+    the network has not moved — the same bargain `routeCache` had always made
+    for village-to-node routes, extended to every other pair;
+  - one Dijkstra out of a place answers *every* destination from it, so a
+    cache row is a shortest-path tree (`RouteTree`) rather than two hundred
+    unrelated answers;
+  - and a route that is only being *priced* never needs its geometry at all,
+    so the polyline is assembled on first demand. Pricing a trip and walking
+    one are different questions; only the winner gets walked.
+
+  Same tick, same seed, same day: **3.8ms**, and the trajectory was
+  bit-identical — same population, same deposits, same roads, same holdings at
+  every checkpoint. That is the tell that these were caches and not tuning.
+  Two smaller ones of the same shape followed: the survey's "can anything see
+  this?" was walking every road's polyline for every deposit (a bounding box
+  rejects almost all of them for nothing), and the dispatcher was re-deriving
+  the same list of nodes-waiting-on-materials once per candidate source.
+
+  The general lesson, and the reason this sits in this list rather than in a
+  commit message: **a design that is deliberately global is not the same thing
+  as a design that must be recomputed globally.** The dispatcher should go on
+  weighing everything against everything. What it was actually paying for was
+  re-deriving a road network that had not changed since the last time it
+  asked.
+- **The one "free" optimisation in that pass that was not free, and how it
+  got caught.** Decaying the traffic field is an exponential, and integrating
+  an exponential in coarse steps is *exactly* the same answer as integrating
+  it in fine ones — so batching the per-tick sweep onto a half-second timer
+  looked like a few percent of the tick for nothing. It shipped alongside the
+  caches above and it was the only one that changed the game.
+
+  What the identity misses is that decay is not the only thing happening to a
+  patch. Deliveries keep packing wear *in* between sweeps, so a longer gap
+  leaves a little more of it standing — a bias well under one percent. Places
+  emerge on a **threshold** of how busy a patch reads, and a permanent thumb
+  on a threshold does not blur an outcome, it tips whichever junctions were
+  already sitting near the line. Across six seeds at day 60: mean settlements
+  **5.3 against 4.2 on the same mean population**, so the same realm spread
+  across more and smaller places, and one seed grew a ghost town where the
+  baseline had none in six.
+
+  Two things worth keeping. **A per-seed diff would have called this a pass** —
+  population, claims, offers, visible sectors and ghost count all matched on
+  the first seed, and the settlement count looked like ordinary variance until
+  it was equal-or-higher on every seed and the mean moved. This is what
+  `batch.ts` is for, and it is why a performance change gets the same
+  multi-seed treatment a balance change does. And **"mathematically identical"
+  is a claim about one term, not about the system it sits in** — the algebra
+  was right and the conclusion was still wrong, because the quantity being
+  integrated was being written to by something else in between.
 
 ## Known and still open
 
@@ -1183,6 +1648,31 @@ before a player does.
   a stall. Wants a real answer — an end state, a victory readout, or
   something else capacity converts into — before authored maps are the
   default way to play.
+- **Goods still do not reach the smallest places, once the realm is large.**
+  *Substantially improved, not closed.* Most of it was that `haulageDemand`
+  priced only node-to-trader trips and was blind to the second hop the
+  processing economy created — a worked good is made at a workshop and then
+  has to travel again, to whoever is building with it. The reserve held back
+  for carrying was therefore sized for about half the freight actually being
+  moved, and the labour market kept posting people to workplaces long past the
+  point where another pair of hands on the road was worth more. Pricing the
+  second hop the same way (Little's law over workshop output rate and the road
+  out) lifted food actually arriving by thirty percent and wealth income by
+  fifty on seed 1234 at day 151, at identical population, and took the
+  population-weighted food shortage from 0.25 to 0.17 across *more* places
+  rather than fewer.
+
+  What is left is a tail. Sixteen or so of thirty-odd places still sit below
+  their own import line for food while the realm produces enough for twice its
+  population, and they are consistently the small, remote, recently-founded
+  ones. A shipment goes to whichever destination scores highest — demand times
+  how good the road is — and a hamlet at the end of a track loses that contest
+  to a town on a trunk road almost every time, however hungry it is. Worth
+  looking at whether a place that has been passed over should accumulate a
+  claim the way a full node already does (`fullSince` in `trade.ts`): the
+  machinery for "being ignored is itself a reason to be served" exists, and is
+  currently only applied at the supply end.
+
 - **The small-population walking trap** (needs re-measuring). On a sparse
   seed (1234's neighbour seed 5 reproduces it), a civilisation of four can
   end up with every last

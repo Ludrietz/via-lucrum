@@ -1,88 +1,111 @@
-import { targetStock, type Trader } from './economy';
+import { crewSkill } from './craft';
+import { builtSlots } from './construction';
+import { targetStock, WORKING_RESERVE, type Trader } from './economy';
 import { ResourceType } from './types';
 import type { Villager } from './villager';
-
-/**
- * How much of its own wanted stock a place has to be holding before an
- * industry may start eating into the rest — a miller works the surplus
- * grain, not the seed corn.
- *
- * This was 0.9, which reads as "just under a full larder" and is in fact
- * *above the ceiling storage can reach*. Deliveries are driven by
- * `shortage`, which stops calling for more the moment a shelf reaches
- * `targetStock`, and `consume` draws it back down continuously — so a place
- * doing perfectly well oscillates just under its target and never above it.
- * At 0.9 an industry needed `0.9 × target + inputPerOutput` on the shelf,
- * roughly a fifth more than the supply chain will ever deliver. Measured at
- * day 111 on seed 1234: every industry at all five places read `hasInput =
- * false`, including sawmills and masonries at places whose own shortage of
- * the input was exactly 0.00. It was not a strict gate, it was an
- * unreachable one, and an entire pillar of the design — raw goods becoming
- * more valuable worked goods — had therefore never run once, in any realm,
- * on any seed. Tools have never been made in this game; that is why every
- * playtest ever printed reports a tools shortage of 1.00 forever.
- *
- * The lesson is the one this project keeps relearning: a threshold's meaning
- * depends on the distribution it is compared against. Check what the
- * quantity actually settles at before picking a line across it. Storage
- * settles *at* target, so "genuine surplus" has to be a fraction of target
- * comfortably below 1, not a hair under it.
- */
-const INDUSTRY_INPUT_LINE = 0.6;
-
-/**
- * How many hands one industry can host, grown into by the trader's own
- * population — the concrete "growth unlocks more economic capacity" the
- * vision asks for. This used to be keyed on the trader's tier instead, which
- * sounded like the same idea but wasn't: tier is itself driven substantially
- * by *this industry's* wealth (see `development.ts`), so tier and capacity
- * fed each other — a couple of lucky workers could push a small population's
- * tier up, which unlocked capacity for more workers than that population
- * could plausibly spare, compounding into a several-worker industry running
- * a population handful. Population is the one number in that loop nothing
- * feeds back into, so it's the only safe thing to key capacity on.
- */
-function industryCapacityFor(population: number, urbanity: number): number {
-  const base = population >= 45 ? 5 : population >= 28 ? 4 : population >= 16 ? 3 : population >= 8 ? 2 : 1;
-  // What a place does with its spare hands depends on what kind of place it
-  // is. In a village most of the population is out on the ground it lives
-  // off, and a workshop is one man and his son; in a town that ground is
-  // somebody else's and the hands are indoors. `urbanity` is read off the
-  // country around a place, not off its size (see `landUse.ts`), which is
-  // what keeps this from feeding back on itself the way keying capacity to
-  // tier did — tier is downstream of industry wealth, so tier and capacity
-  // used to grow each other.
-  //
-  // This is the other half of the rural/urban split, and the half that makes
-  // it worth watching: a place with room to grow doesn't just get bigger, it
-  // turns to planks, blocks and tools, which is where the wealth is.
-  return Math.max(1, Math.round(base * (0.55 + 0.65 * urbanity)));
-}
 
 export enum IndustryType {
   Sawmill = 'sawmill',
   Masonry = 'masonry',
   Smithy = 'smithy',
+  Joinery = 'joinery',
+  Bakery = 'bakery',
+}
+
+export interface RecipeInput {
+  resource: ResourceType;
+  per: number;
 }
 
 export interface IndustryRecipe {
-  input: ResourceType;
-  inputPerOutput: number;
+  inputs: readonly RecipeInput[];
   output: ResourceType;
   /** Seconds one worker needs to produce a single unit, before diminishing returns. */
   workSeconds: number;
 }
 
 /**
- * A small, deliberately simple processing chain: wood and stone become the
- * building materials a settlement actually wants, and iron becomes the one
- * good worth clearly more than the raw material it came from — the whole
- * point of a smithy being worth running at all.
+ * The processing chain. Wood and stone become the building materials a
+ * settlement actually wants; iron and fuel become tools; and sawn timber and
+ * tools together become the finished joinery and ironwork that separates a
+ * house from a shed.
+ *
+ * **Two of these need more than one thing, and that is the point.** With one
+ * input apiece, a workshop asked only "does this place have a surplus of its
+ * own raw good?" — and since every place keeps a buffer of every raw good,
+ * the answer was yes nearly everywhere. Measured on seed 1234 at day 151:
+ * twenty-one of thirty-three places ran two or more industries and twelve ran
+ * all three. Nowhere specialised in anything, because nothing ever made
+ * specialising necessary. A civilisation of identical little factories is not
+ * a trade network; it is thirty-three autarkies sharing a map.
+ *
+ * A recipe that wants two goods can only run where both actually arrive, and
+ * what decides that is the road network — which is the one thing in this game
+ * the player draws. A smithy now wants charcoal as well as ore, so ironwork
+ * happens where the ore country meets the timber country rather than wherever
+ * an ore cart happened to stop. A joinery wants sawn plank *and* finished
+ * tools, which means the two other chains both have to reach it: in practice
+ * a hub, which is exactly the sort of place a city should be.
  */
 export const INDUSTRY_RECIPES: Record<IndustryType, IndustryRecipe> = {
-  [IndustryType.Sawmill]: { input: ResourceType.Wood, inputPerOutput: 2, output: ResourceType.Planks, workSeconds: 6 },
-  [IndustryType.Masonry]: { input: ResourceType.Stone, inputPerOutput: 2, output: ResourceType.StoneBlocks, workSeconds: 8 },
-  [IndustryType.Smithy]: { input: ResourceType.Iron, inputPerOutput: 1, output: ResourceType.Tools, workSeconds: 10 },
+  [IndustryType.Sawmill]: {
+    inputs: [{ resource: ResourceType.Wood, per: 2 }],
+    output: ResourceType.Planks,
+    workSeconds: 6,
+  },
+  [IndustryType.Masonry]: {
+    inputs: [{ resource: ResourceType.Stone, per: 2 }],
+    output: ResourceType.StoneBlocks,
+    workSeconds: 8,
+  },
+  // Charcoal, without modelling charcoal. A forge burns several times its own
+  // weight of fuel per unit of iron worked, and adding a burner as a fourth
+  // good would have bought nothing the timber requirement does not already
+  // buy — see the note at the top of this table about what multi-input
+  // recipes are actually for.
+  [IndustryType.Smithy]: {
+    inputs: [
+      { resource: ResourceType.Iron, per: 1 },
+      { resource: ResourceType.Wood, per: 2 },
+    ],
+    output: ResourceType.Tools,
+    workSeconds: 10,
+  },
+  [IndustryType.Joinery]: {
+    inputs: [
+      { resource: ResourceType.Planks, per: 2 },
+      { resource: ResourceType.Tools, per: 1 },
+    ],
+    output: ResourceType.Fittings,
+    workSeconds: 14,
+  },
+  /**
+   * The food side of the same idea, and the answer to "what is a granary
+   * full of grain actually *for*".
+   *
+   * A place with more farmland than it can eat had nowhere to put the
+   * surplus: food is not a building material, so the only sink was the
+   * population it already had, and the excess simply decayed off the shelf.
+   * Baking gives grain the same treatment timber gets — two measures of grain
+   * and the fuel to fire the oven make one of bread, and bread feeds three
+   * (see `BREAD_NOURISHMENT`). So a bakery turns a farming county's surplus
+   * into half again as much food as the grain was worth, and — because
+   * nourishment travels in the loaf rather than the sack — into a third as
+   * many cart-loads for the same number of people fed.
+   *
+   * Sited by the same two-sided rule as everything else, which is what makes
+   * it land in both the places the design wants it: out among the farms, where
+   * the grain is spare, and in a town, where grain from a dozen farms is
+   * already being centralised and the fuel is already arriving.
+   */
+  [IndustryType.Bakery]: {
+    inputs: [
+      { resource: ResourceType.Food, per: 2 },
+      { resource: ResourceType.Wood, per: 1 },
+    ],
+    output: ResourceType.Bread,
+    workSeconds: 5,
+  },
 };
 
 /** Same shape as `ResourceNode`'s diminishing returns, kept consistent. */
@@ -90,18 +113,38 @@ const DIMINISHING_EXPONENT = 0.7;
 
 /**
  * A processing facility living inside a trader, not on the map — no
- * position, no rendering, no levelling. Every trader gets one of each type
- * at construction (see `Village`/`Settlement`); an industry with no workers
- * is simply inert, which is what makes "activation" an emergent staffing
- * outcome — workers only get posted here when there's demand for the
- * output, input on hand, and spare labour (see `IndustrySystem`) — rather
- * than something the player builds.
+ * position, no rendering, no levelling. Every trader has one of each type as
+ * a *possibility* (see `Village`/`Settlement`); until something is actually
+ * built into it, it has no room for anyone and does not exist in any sense
+ * the world can feel. Workers are then posted here only when there's demand
+ * for the output, input on hand, and spare labour (see `IndustrySystem`) —
+ * so both whether a workshop exists and whether it runs are consequences,
+ * never things the player places.
  */
 export class Industry {
   readonly type: IndustryType;
   readonly owner: Trader;
   readonly workers: Villager[] = [];
   incomingWorkers = 0;
+
+  /**
+   * Fabric built into this workshop — see `construction.ts`. This is the
+   * whole of "how big is the sawmill", and it is bought with material
+   * somebody carried here.
+   *
+   * It replaces a table keyed on the owner's population and how urban its
+   * hinterland was. That table was the last place in the simulation where an
+   * economic capacity was handed out by a *category* a place fell into rather
+   * than by anything it had done, and it read exactly as arbitrary as it was:
+   * a village of sixteen could host three sawyers and one of fifteen could
+   * host two, on a map where nothing in the world looked any different either
+   * side of the line. Worse, it answered the wrong question entirely. Whether
+   * a place should be milling planks has nothing to do with how many people
+   * live there and everything to do with whether there is timber going spare
+   * and anyone wanting planks — which is precisely what `worksWant` now asks
+   * before a single point of this gets laid.
+   */
+  built = 0;
 
   private productionTimer = 0;
 
@@ -111,7 +154,12 @@ export class Industry {
   }
 
   get workerCapacity(): number {
-    return industryCapacityFor(this.owner.population, this.owner.urbanity);
+    return builtSlots(this.built);
+  }
+
+  /** Whether this workshop exists at all yet — anything unbuilt is not a workplace. */
+  get exists(): boolean {
+    return this.workerCapacity > 0;
   }
 
   get recipe(): IndustryRecipe {
@@ -126,14 +174,14 @@ export class Industry {
   /** Units produced per second at the current headcount — same diminishing-returns shape as a resource node. */
   get productionRate(): number {
     if (this.workers.length === 0) return 0;
-    // Clamped to 1: a shrunk trader's population can leave an industry
-    // holding more workers than `workerCapacity` currently allows (nothing
-    // evicts a working villager just because the owner's population later
-    // fell — see `industryCapacityFor`'s comment), and letting that read as
-    // *over*-full would hand a shrunken place a production bonus for being
-    // overstaffed relative to its own current size.
-    const fraction = Math.min(1, this.workers.length / this.workerCapacity);
-    return (this.workerCapacity / this.recipe.workSeconds) * fraction ** DIMINISHING_EXPONENT;
+    // Clamped to 1: a workshop that has decayed below what its current crew
+    // needs can be left holding more workers than `workerCapacity` allows
+    // (nothing evicts a working villager just because the roof fell in on
+    // half the shed), and letting that read as *over*-full would hand a
+    // crumbling mill a production bonus for being overstaffed.
+    const capacity = Math.max(1, this.workerCapacity);
+    const fraction = Math.min(1, this.workers.length / capacity);
+    return (capacity / this.recipe.workSeconds) * fraction ** DIMINISHING_EXPONENT * crewSkill(this.workers);
   }
 
   /**
@@ -158,27 +206,38 @@ export class Industry {
    * genuinely has more than it needs.
    */
   get hasInput(): boolean {
-    const { input, inputPerOutput } = this.recipe;
-    const spare = this.owner.storage[input] - targetStock(this.owner, input) * INDUSTRY_INPUT_LINE;
-    return spare >= inputPerOutput;
+    return this.batchesAvailable() >= 1;
+  }
+
+  /**
+   * How many units this workshop could make right now out of material
+   * genuinely spare — the scarcest input decides, which is what makes a
+   * two-input recipe a real question about where a place sits on the network
+   * rather than about how rich it is.
+   */
+  private batchesAvailable(): number {
+    let batches = Infinity;
+    for (const { resource, per } of this.recipe.inputs) {
+      const spare = this.owner.storage[resource] - targetStock(this.owner, resource) * WORKING_RESERVE;
+      batches = Math.min(batches, spare / per);
+    }
+    return batches;
   }
 
   /** Converts input to output straight in the owner's own storage; returns units made this tick. */
   produce(dt: number): number {
     if (this.workers.length === 0) return 0;
 
-    const { input, inputPerOutput, output } = this.recipe;
+    const { inputs, output } = this.recipe;
     this.productionTimer += dt;
     const perUnit = 1 / this.productionRate;
 
+    let produced = 0;
     // The same line `hasInput` draws, applied per unit: an industry stops the
     // moment it would be eating into what its own place needs, rather than
     // running the shelf to zero the instant a delivery lands.
-    const floor = targetStock(this.owner, input) * INDUSTRY_INPUT_LINE;
-
-    let produced = 0;
-    while (this.productionTimer >= perUnit && this.owner.storage[input] - floor >= inputPerOutput) {
-      this.owner.storage[input] -= inputPerOutput;
+    while (this.productionTimer >= perUnit && this.batchesAvailable() >= 1) {
+      for (const { resource, per } of inputs) this.owner.storage[resource] -= per;
       this.owner.storage[output] += 1;
       this.productionTimer -= perUnit;
       produced++;

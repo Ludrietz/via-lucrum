@@ -229,7 +229,7 @@ export class DebugLayer {
         rows.push(
           `<div class="row"><span class="label">${node.name}</span>` +
             `<span class="value">${Math.round(route.length)}px ×${route.difficulty.toFixed(2)}` +
-            ` = ${(route.resistance / WALK_SPEED).toFixed(1)}s</span></div>`,
+            ` = ${(route.resistance / WALK_SPEED).toFixed(1)}h</span></div>`,
         );
       }
     }

@@ -35,6 +35,25 @@ interface ParcelView {
  * point, which is what rounds off single-cell spurs and lets two lobes of the
  * same parcel merge visually where they nearly touch.
  */
+/**
+ * How solidly a parcel reads.
+ *
+ * These were 0.13 and 0.16, which on this map's low-contrast ground amounts
+ * to a faint wash — and the ground a place holds is not decoration. It is the
+ * whole of the land system: which cells a town has taken, where a wood has
+ * been built over, why a village hemmed in by four workings will never be a
+ * city. All of that is decided cell by cell and was being shown at an alpha
+ * the player had to go looking for.
+ *
+ * Raised to where the shape is legible at a glance without burying the
+ * terrain under it, and the outline raised further still: the *edge* is what
+ * carries the information — where one claimant stops and the next begins — so
+ * it should read harder than the fill it encloses.
+ */
+const WORKED_FILL = 0.28;
+const SETTLED_FILL = 0.32;
+const PARCEL_LINE = 0.85;
+
 export class LandUseLayer {
   private readonly worked: Phaser.GameObjects.Graphics;
   private readonly settled: Phaser.GameObjects.Graphics;
@@ -83,8 +102,8 @@ export class LandUseLayer {
       this.drawParcel(this.worked, {
         parcel: node.ground,
         colour: RESOURCE_COLORS[node.resource] ?? COLORS.inkSoft,
-        fillAlpha: 0.13,
-        lineAlpha: 0.6,
+        fillAlpha: WORKED_FILL,
+        lineAlpha: PARCEL_LINE,
       });
     }
 
@@ -93,8 +112,8 @@ export class LandUseLayer {
       this.drawParcel(this.settled, {
         parcel: trader.ground,
         colour: COLORS.settledGround,
-        fillAlpha: 0.16,
-        lineAlpha: 0.6,
+        fillAlpha: SETTLED_FILL,
+        lineAlpha: PARCEL_LINE,
       });
     }
   }

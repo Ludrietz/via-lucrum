@@ -1,17 +1,8 @@
 import Phaser from 'phaser';
 import { cumulativeLengths, resamplePolyline, type Vec2 } from '../sim/geometry';
-import type { RoadEdge } from '../sim/roadNetwork';
+import type { GraphNode, RoadEdge } from '../sim/roadNetwork';
 import type { World } from '../sim/world';
-import {
-  COLORS,
-  DEPTH,
-  roadAlpha,
-  roadCasingAlpha,
-  roadCasingColor,
-  roadCasingGrow,
-  roadColor,
-  roadWidth,
-} from './theme';
+import { COLORS, DEPTH, roadCasingColor, roadCasingGrow, roadColor, roadWidth } from './theme';
 
 export interface RoadPreview {
   points: Vec2[];
@@ -26,6 +17,24 @@ const SAMPLE_SPACING = 15;
 const COLOR_BAND = 3;
 /** Wear moves slowly, so the widths only need refreshing a few times a second. */
 const REFRESH_INTERVAL = 0.2;
+/** How far the whole shadow layer is faded, once, after it is drawn opaquely. */
+const CASING_ALPHA = 0.4;
+/**
+ * How far out from a junction the roads meeting there are gathered into one
+ * mouth, as a multiple of the widest road's half-width.
+ */
+const MOUTH_REACH = 1.7;
+/**
+ * Over what distance a road's end flares to meet the junction it runs into,
+ * and how much of the way it goes.
+ *
+ * A spur joining a highway should open out as it arrives — that flare is most
+ * of what makes a junction read as one road *joining* another rather than two
+ * ribbons crossing. It does not go all the way: a footpath meeting a highway
+ * widens at its mouth, it does not become a highway.
+ */
+const TAPER_REACH = 46;
+const TAPER_STRENGTH = 0.55;
 
 interface EdgeShape {
   samples: Vec2[];
@@ -35,12 +44,39 @@ interface EdgeShape {
   wet: boolean[];
 }
 
+/** Where one road meets a junction, and how wide it is when it gets there. */
+interface Mouth {
+  /** Unit vector pointing away from the node, along this road. */
+  dir: Vec2;
+  half: number;
+  left: Vec2;
+  right: Vec2;
+}
+
+/** The point `distance` along a polyline, or null if it is shorter than that. */
+function pointAlong(points: Vec2[], distance: number): Vec2 | null {
+  let walked = 0;
+  for (let i = 0; i < points.length - 1; i++) {
+    const step = Math.hypot(points[i + 1].x - points[i].x, points[i + 1].y - points[i].y);
+    if (walked + step >= distance) {
+      const t = step > 0 ? (distance - walked) / step : 0;
+      return {
+        x: points[i].x + (points[i + 1].x - points[i].x) * t,
+        y: points[i].y + (points[i + 1].y - points[i].y) * t,
+      };
+    }
+    walked += step;
+  }
+  return points.length >= 2 ? points[points.length - 1] : null;
+}
+
 /**
  * Draws the road network with a width that varies along each road, taken from
  * the wear packed into the ground beneath it. Where several roads run together
  * the shared corridor thickens into a highway; a spur off it stays a track.
  */
 export class RoadLayer {
+  private readonly casingGfx: Phaser.GameObjects.Graphics;
   private readonly gfx: Phaser.GameObjects.Graphics;
   private readonly previewGfx: Phaser.GameObjects.Graphics;
   private readonly highlightGfx: Phaser.GameObjects.Graphics;
@@ -53,6 +89,17 @@ export class RoadLayer {
   private drawnVersion = -1;
 
   constructor(scene: Phaser.Scene, private readonly world: World) {
+    // The shadow under the roads is its own object, and carries its softness
+    // as the *object's* alpha rather than as an alpha on each shape it draws.
+    //
+    // That is the difference between a network and a plaid. Translucent shapes
+    // composite with each other: two roads crossing stacked their shadows and
+    // came out darker at the crossing, a fan of four roads out of a village
+    // came out darker still, and every junction in the game wore a bruise that
+    // got worse the more important the junction was. Drawn opaquely into one
+    // object and faded once, overlapping shadows are simply the same shadow —
+    // which is what a shadow is.
+    this.casingGfx = scene.add.graphics().setDepth(DEPTH.roads - 0.5).setAlpha(CASING_ALPHA);
     this.gfx = scene.add.graphics().setDepth(DEPTH.roads);
     this.previewGfx = scene.add.graphics().setDepth(DEPTH.preview);
     this.highlightGfx = scene.add.graphics().setDepth(DEPTH.roads - 1);
@@ -111,7 +158,14 @@ export class RoadLayer {
         widths: Float32Array.from(samples, (p) => roadWidth(this.world.traffic.wearAt(p))),
         // Terrain under a finished road never changes, so this is worked out
         // once with the rest of the shape rather than per frame.
-        wet: samples.map((p) => !this.world.terrain.isPassable(p)),
+        // Two kinds of water, and the renderer has to ask both. Lakes and sea
+        // are wet *cells* in the terrain raster; a river is a line with a
+        // width, narrower than a cell and so invisible to `isPassable` — which
+        // meant the raster alone drew a bridge over every lake and not one over
+        // any river in the game. See `RiverNetwork.widthAt`.
+        wet: samples.map(
+          (p) => !this.world.terrain.isPassable(p) || this.world.rivers.widthAt(p) > 0,
+        ),
       };
       this.shapes.set(edge.id, shape);
     }
@@ -124,6 +178,7 @@ export class RoadLayer {
     for (const edge of this.world.network.edges) {
       const shape = this.shapeFor(edge);
       const target = shape.samples.map((p) => roadWidth(this.world.traffic.wearAt(p)));
+      this.flareIntoJunctions(edge, shape, target);
       const smoothed = smooth(target);
 
       for (let i = 0; i < shape.widths.length; i++) {
@@ -132,20 +187,85 @@ export class RoadLayer {
     }
   }
 
-  private draw(): void {
-    const g = this.gfx;
-    g.clear();
+  /**
+   * Open a road out where it runs into a junction.
+   *
+   * Without this, a spur and the highway it joins simply abut, and the join
+   * reads as a narrow ribbon laid across a wide one. Roads do not do that:
+   * the minor one opens out at its mouth to meet the major one, and that
+   * flare is most of what tells the eye which road is joining which.
+   *
+   * Only ever upward, and only part of the way. A road never *narrows* to
+   * meet a quieter one — a highway does not pinch because a footpath joins it
+   * — and a footpath meeting a highway widens at its mouth without becoming a
+   * highway, which is what `TAPER_STRENGTH` short of 1 buys.
+   */
+  private flareIntoJunctions(edge: RoadEdge, shape: EdgeShape, target: number[]): void {
+    const total = shape.cum[shape.cum.length - 1];
 
+    for (const [node, fromStart] of [
+      [edge.a, true],
+      [edge.b, false],
+    ] as const) {
+      if (node.edges.length < 3) continue;
+
+      const busiest = Math.max(
+        ...node.edges.map((other) => roadWidth(this.world.traffic.wearAt(other.other(node).position))),
+        roadWidth(this.world.traffic.wearAt(node.position)),
+      );
+
+      for (let i = 0; i < target.length; i++) {
+        const distance = fromStart ? shape.cum[i] : total - shape.cum[i];
+        if (distance > TAPER_REACH) continue;
+
+        // Eased, not linear. A linear flare starts with a corner exactly where
+        // it begins, and at fifteen units between samples that corner is a
+        // visible notch in the side of the road rather than an opening out.
+        const t = 1 - distance / TAPER_REACH;
+        const closeness = t * t * (3 - 2 * t);
+        const want = Math.max(target[i], busiest);
+        target[i] += (want - target[i]) * closeness * TAPER_STRENGTH;
+      }
+    }
+  }
+
+  /**
+   * The whole network, drawn in layers rather than road by road.
+   *
+   * Order is the entire design here. A road is a shadow, a surface, and —
+   * where roads meet — a plate that gathers their mouths into one. Drawing
+   * those three per road meant each road's shadow landed on the surface of
+   * whichever road was drawn before it, and each junction plate landed under
+   * roads drawn after it. Every crossing came out as a lattice of dark seams
+   * and every fan of roads out of a village as a splatter of overlapping
+   * ribbons, which is exactly what a road network is not.
+   *
+   * Laid down as four sweeps over the whole network — every shadow, then
+   * every surface, then the bridges, then nothing else — roads that meet
+   * simply become one shape, because they are one shape.
+   */
+  private draw(): void {
+    const casing = this.casingGfx;
+    const surface = this.gfx;
+    casing.clear();
+    surface.clear();
+
+    const drawable: Array<{ shape: EdgeShape; count: number }> = [];
     for (const edge of this.world.network.edges) {
       const shape = this.shapeFor(edge);
       const count = this.visibleSamples(edge, shape);
-      if (count < 2) continue;
-
-      this.drawBandedRibbon(g, shape, count);
-      this.drawBridges(g, shape, count);
+      if (count >= 2) drawable.push({ shape, count });
     }
 
-    this.drawJunctions(g);
+    for (const { shape, count } of drawable) this.ribbonPass(casing, shape, count, true);
+    this.drawJunctionPlates(casing, true);
+
+    for (const { shape, count } of drawable) this.ribbonPass(surface, shape, count, false);
+    this.drawJunctionPlates(surface, false);
+
+    // Bridges last: a bridge is the one thing here that is genuinely built
+    // rather than worn, and it sits on top of the road it carries.
+    for (const { shape, count } of drawable) this.drawBridges(surface, shape, count);
   }
 
   /**
@@ -156,11 +276,15 @@ export class RoadLayer {
    * share their boundary sample so they sit edge to edge with no seam, and
    * only the road's true start and end get a rounded cap.
    */
-  private drawBandedRibbon(g: Phaser.GameObjects.Graphics, shape: EdgeShape, count: number): void {
+  private ribbonPass(
+    g: Phaser.GameObjects.Graphics,
+    shape: EdgeShape,
+    count: number,
+    shadow: boolean,
+  ): void {
     for (let start = 0; start < count - 1; start += COLOR_BAND) {
       const end = Math.min(count - 1, start + COLOR_BAND);
       const points = shape.samples.slice(start, end + 1);
-      const widths = Array.from(shape.widths.slice(start, end + 1));
       if (points.length < 2) continue;
 
       let wearSum = 0;
@@ -170,19 +294,14 @@ export class RoadLayer {
       const capStart = start === 0;
       const capEnd = end === count - 1;
 
-      // Two passes, both driven by the same wear: a shadow that widens and
-      // darkens as the road gets busier, and the pale surface on top of it.
-      // The shadow is what stops a near-white highway dissolving into pale
-      // fields, and most of what reads as bulk at a glance.
-      //
-      // Its width is taken per sample rather than per band. Colour can step
-      // between bands without anyone noticing; an outline that steps leaves a
-      // visible notch in the road's silhouette at every band boundary.
-      const casing = points.map(
-        (p, i) => widths[i] + roadCasingGrow(this.world.traffic.wearAt(p)),
-      );
-      this.ribbon(g, points, casing, 0, roadCasingColor(wear), roadCasingAlpha(wear), capStart, capEnd);
-      this.ribbon(g, points, widths, 0, roadColor(wear), roadAlpha(wear), capStart, capEnd);
+      // The shadow's width is taken per sample rather than per band. Colour
+      // can step between bands without anyone noticing; an outline that steps
+      // leaves a visible notch in the road's silhouette at every boundary.
+      const widths = shadow
+        ? points.map((p, i) => shape.widths[start + i] + roadCasingGrow(this.world.traffic.wearAt(p)))
+        : Array.from(shape.widths.slice(start, end + 1));
+
+      this.ribbon(g, points, widths, shadow ? roadCasingColor(wear) : roadColor(wear), capStart, capEnd);
 
       if (capEnd) break;
     }
@@ -229,8 +348,11 @@ export class RoadLayer {
 
     // The deck itself: pale timber, a little wider than the road it carries.
     const widths = points.map(() => deck);
-    this.ribbon(g, points, widths, 3, COLORS.ink, 0.55, true, true);
-    this.ribbon(g, points, widths, 0, COLORS.parchmentLight, 0.95, true, true);
+    const posts = points.map(() => deck + 3);
+    g.setAlpha(0.55);
+    this.ribbon(g, points, posts, COLORS.ink, true, true);
+    g.setAlpha(1);
+    this.ribbon(g, points, widths, COLORS.parchmentLight, true, true);
 
     // Planks across it, and posts at the ends.
     g.lineStyle(1.4, COLORS.ink, 0.45);
@@ -272,9 +394,7 @@ export class RoadLayer {
     g: Phaser.GameObjects.Graphics,
     points: Vec2[],
     widths: number[],
-    grow: number,
     color: number,
-    alpha: number,
     capStart = true,
     capEnd = true,
   ): void {
@@ -287,7 +407,7 @@ export class RoadLayer {
       const dx = next.x - prev.x;
       const dy = next.y - prev.y;
       const len = Math.hypot(dx, dy) || 1;
-      const half = (widths[i] + grow) / 2;
+      const half = widths[i] / 2;
       const nx = (-dy / len) * half;
       const ny = (dx / len) * half;
 
@@ -295,30 +415,101 @@ export class RoadLayer {
       right.push(new Phaser.Geom.Point(points[i].x - nx, points[i].y - ny));
     }
 
-    g.fillStyle(color, alpha);
+    // Opaque, always. Faintness is carried by the colour and, for the shadow,
+    // by the one alpha on the whole layer — see the constructor. A per-shape
+    // alpha here is what made overlapping roads brighten and crossing shadows
+    // darken, and no amount of draw ordering fixes that.
+    g.fillStyle(color, 1);
     g.fillPoints([...left, ...right.reverse()], true);
 
     // Rounded ends — only where this band is the road's true start or end;
     // an interior band boundary butts flush against its neighbour instead.
-    if (capStart) g.fillCircle(points[0].x, points[0].y, (widths[0] + grow) / 2);
+    if (capStart) g.fillCircle(points[0].x, points[0].y, widths[0] / 2);
     if (capEnd) {
       const last = points.length - 1;
-      g.fillCircle(points[last].x, points[last].y, (widths[last] + grow) / 2);
+      g.fillCircle(points[last].x, points[last].y, widths[last] / 2);
     }
   }
 
   /** A soft marker where roads meet, sized by how busy the meeting is. */
-  private drawJunctions(g: Phaser.GameObjects.Graphics): void {
+  private drawJunctionPlates(g: Phaser.GameObjects.Graphics, shadow: boolean): void {
     for (const node of this.world.network.nodes) {
-      if (!node.isJunction || node.edges.length < 3) continue;
+      if (node.edges.length < 3) continue;
 
       const wear = this.world.traffic.wearAt(node.position);
-      const width = roadWidth(wear);
-      g.fillStyle(roadCasingColor(wear), roadCasingAlpha(wear) + 0.08);
-      g.fillCircle(node.position.x, node.position.y, width / 2 + roadCasingGrow(wear) / 2);
-      g.fillStyle(roadColor(wear), roadAlpha(wear));
-      g.fillCircle(node.position.x, node.position.y, width / 2 + 0.5);
+      const mouths = this.mouthsAt(node, shadow);
+      if (mouths.length < 3) continue;
+
+      const reach = Math.max(...mouths.map((m) => m.half));
+      const polygon: Phaser.Geom.Point[] = [];
+
+      for (let i = 0; i < mouths.length; i++) {
+        const here = mouths[i];
+        const next = mouths[(i + 1) % mouths.length];
+
+        polygon.push(new Phaser.Geom.Point(here.right.x, here.right.y));
+        polygon.push(new Phaser.Geom.Point(here.left.x, here.left.y));
+
+        // The waist between this mouth and the next one round.
+        const bx = here.dir.x + next.dir.x;
+        const by = here.dir.y + next.dir.y;
+        const blen = Math.hypot(bx, by);
+        if (blen < 1e-3) continue; // Two roads dead opposite: no crotch to close.
+        const pull = Math.min(here.half, next.half) * 0.9;
+        polygon.push(
+          new Phaser.Geom.Point(node.position.x + (bx / blen) * pull, node.position.y + (by / blen) * pull),
+        );
+      }
+
+      g.fillStyle(shadow ? roadCasingColor(wear) : roadColor(wear), 1);
+      g.fillPoints(polygon, true);
+      // A small disc at the centre, so an awkward set of angles can never
+      // leave a pinhole where the road should be continuous.
+      g.fillCircle(node.position.x, node.position.y, reach * 0.55);
     }
+  }
+
+  /**
+   * For each road leaving this node: which way it goes, and where the two
+   * edges of its own width sit a short way along it.
+   */
+  private mouthsAt(node: GraphNode, shadow: boolean): Mouth[] {
+    const grow = shadow ? roadCasingGrow(this.world.traffic.wearAt(node.position)) : 0;
+    const widest = Math.max(...node.edges.map((edge) => this.widthAtNode(edge, node) + grow));
+    const reach = (widest / 2) * MOUTH_REACH;
+
+    const mouths: Mouth[] = [];
+    for (const edge of node.edges) {
+      if (!edge.isBuilt) continue;
+
+      const at = pointAlong(edge.pointsFrom(node), reach);
+      if (!at) continue;
+
+      const dx = at.x - node.position.x;
+      const dy = at.y - node.position.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-3) continue;
+      const dir = { x: dx / len, y: dy / len };
+      const half = (this.widthAtNode(edge, node) + grow) / 2;
+
+      mouths.push({
+        dir,
+        half,
+        left: { x: at.x - dir.y * half, y: at.y + dir.x * half },
+        right: { x: at.x + dir.y * half, y: at.y - dir.x * half },
+      });
+    }
+
+    // Angular order, so walking the list walks round the junction.
+    mouths.sort((a, b) => Math.atan2(a.dir.y, a.dir.x) - Math.atan2(b.dir.y, b.dir.x));
+    return mouths;
+  }
+
+  /** How wide a given road is where it arrives at a given node. */
+  private widthAtNode(edge: RoadEdge, node: GraphNode): number {
+    const shape = this.shapes.get(edge.id);
+    if (!shape || shape.widths.length === 0) return roadWidth(this.world.traffic.wearAt(node.position));
+    return edge.a === node ? shape.widths[0] : shape.widths[shape.widths.length - 1];
   }
 
   private drawHighlight(): void {
@@ -333,14 +524,8 @@ export class RoadLayer {
 
     const shape = this.shapeFor(edge);
     const widths = Array.from(shape.widths, (w) => w + 7);
-    this.ribbon(
-      g,
-      shape.samples,
-      widths,
-      0,
-      this.highlightDanger ? COLORS.erase : COLORS.ink,
-      this.highlightDanger ? 0.4 : 0.16,
-    );
+    g.setAlpha(this.highlightDanger ? 0.4 : 0.16);
+    this.ribbon(g, shape.samples, widths, this.highlightDanger ? COLORS.erase : COLORS.ink);
   }
 
   private drawPreview(): void {

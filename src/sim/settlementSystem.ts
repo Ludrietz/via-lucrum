@@ -273,7 +273,14 @@ export class SettlementSystem {
       w.room * room;
 
     const parts = { traffic, quality, junction, resources, terrain, room, crowding, goods };
-    return { score: clamp01(raw) * crowding * (terrain > 0 ? 1 : 0), parts };
+    // Nothing is founded on ground nothing can stand on. This used to read
+    // `terrain > 0`, which was the same test only for as long as water scored
+    // exactly zero — and water stopped scoring zero when a town was allowed to
+    // run a wharf out over its own river (see `landUse.ts`). Suitability is a
+    // *preference*; whether a place can exist at all is a different question,
+    // and asking the one that means what it says keeps the two independent.
+    const standable = ctx.terrain.isPassable(position) ? 1 : 0;
+    return { score: clamp01(raw) * crowding * standable, parts };
   }
 
   /** Roads meeting nearby make a place matter more than a straight run does. */

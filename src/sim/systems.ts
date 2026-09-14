@@ -12,9 +12,10 @@ import {
   type Destination,
   type Trader,
 } from './economy';
+import { commitmentOf, forget, practise, takeUpCraft } from './craft';
 import { Industry } from './industry';
 import { ResourceNode } from './resourceNode';
-import { dist, type Vec2 } from './geometry';
+import { dist, distSq, type Vec2 } from './geometry';
 import { Route } from './roadNetwork';
 import { Settlement } from './settlement';
 import { findBestShipment } from './trade';
@@ -49,33 +50,87 @@ const UNLOAD_TIME = 1.0;
 const DISPATCH_INTERVAL = 0.7;
 /** How much worse a shortage has to be before it's worth pulling a worker off another job for. */
 const REASSIGN_MARGIN = 0.6;
+/**
+ * How much a person's standing in their own trade adds to that. Set so a
+ * master is roughly three times as dear to move as a raw hand — enough that
+ * settled crews genuinely stay settled, while a real famine (see
+ * `laborPriority`, where a necessity in genuine trouble scores well past 2)
+ * can still reach anyone in the realm.
+ */
+const COMMITMENT_WEIGHT = 1.2;
 /** Idle hands per step up in how often loads set off — see `TransportSystem.dispatch`. */
 const WAITING_PER_CARAVAN = 4;
 /** Ceiling on that speed-up, so the dispatcher can never become a per-tick decision again. */
 const MAX_DISPATCH_RATE = 8;
 
 /**
- * Whichever idle villager would reach `target` most cheaply. Individuals
- * are grouped by home first — everyone idle at the same place would get the
- * identical route, so there is no need to price each of them separately —
- * then the cheapest home wins. A target that IS somebody's home costs them
- * nothing at all: they're already there.
+ * One idle villager per place that has any.
+ *
+ * Everyone idle at the same place would get the identical route, so there is
+ * never a reason to price them separately — and the roster does not change
+ * while a single decision is being made, which is why it is gathered once and
+ * passed around rather than rebuilt inside `nearestIdleAmong`.
+ *
+ * `craft` is what breaks the tie *within* a place: when a post is being
+ * filled, the person sent is whoever there already follows that trade, and
+ * failing that whoever has least to lose by taking it up. Carrying a load
+ * needs no trade at all, so the dispatcher passes nothing and gets the old
+ * first-idle-found behaviour.
  */
+function idleByHome(villagers: Villager[], craft: ResourceType | null = null): Map<Trader, Villager> {
+  const out = new Map<Trader, Villager>();
+  for (const v of villagers) {
+    if (!v.isFree) continue;
+    const sitting = out.get(v.home);
+    if (!sitting) {
+      out.set(v.home, v);
+      continue;
+    }
+    if (craft !== null && commitmentOf(v, craft) < commitmentOf(sitting, craft)) out.set(v.home, v);
+  }
+  return out;
+}
+
+/** Whichever idle villager would reach `target` most cheaply — a tradesman for preference. */
 function nearestIdleTo(
   villagers: Villager[],
   target: ResourceNode | Trader,
   routeBetweenSites: (from: ResourceNode | Trader, to: Destination) => Route | null,
+  craft: ResourceType | null = null,
 ): { villager: Villager; route: Route } | null {
-  const idleByHome = new Map<Trader, Villager>();
-  for (const v of villagers) {
-    if (v.isFree && !idleByHome.has(v.home)) idleByHome.set(v.home, v);
-  }
+  return nearestIdleAmong(idleByHome(villagers, craft), target, routeBetweenSites, craft);
+}
 
-  let best: { villager: Villager; route: Route } | null = null;
-  for (const [home, villager] of idleByHome) {
+/**
+ * The same, against a roster already gathered — which is what the dispatcher
+ * wants, since it asks this of every source in the realm before choosing one.
+ *
+ * A target that IS somebody's home costs them nothing at all: they are already
+ * there.
+ *
+ * Where a trade is wanted, a man who already follows it is worth going a
+ * little further for. `CRAFT_REACH` is what a full master's skill is worth in
+ * road: enough that a sawyer two valleys over is fetched back to a mill
+ * ahead of a farmhand stood next to it, and not so much that a realm ships
+ * people across itself when somebody local would do. It is the counterpart of
+ * the reassignment margin — one keeps a tradesman where they are, this one
+ * puts them back at their own trade when they have come free.
+ */
+const CRAFT_REACH = 0.45;
+
+function nearestIdleAmong(
+  idle: Map<Trader, Villager>,
+  target: ResourceNode | Trader,
+  routeBetweenSites: (from: ResourceNode | Trader, to: Destination) => Route | null,
+  craft: ResourceType | null = null,
+): { villager: Villager; route: Route } | null {
+  let best: { villager: Villager; route: Route; cost: number } | null = null;
+  for (const [home, villager] of idle) {
     const route = home === target ? new Route([home.position, home.position], []) : routeBetweenSites(home, target);
     if (!route) continue;
-    if (!best || route.resistance < best.route.resistance) best = { villager, route };
+    const match = craft !== null && villager.craft === craft ? villager.experience : 0;
+    const cost = route.resistance * (1 - CRAFT_REACH * match);
+    if (!best || cost < best.cost) best = { villager, route, cost };
   }
   return best;
 }
@@ -87,7 +142,20 @@ function nearestIdleTo(
  * answers "who lives nearest here", for the person, not the node.
  */
 export function nearestTrader(point: Vec2, traders: Trader[]): Trader {
-  return traders.reduce((a, b) => (dist(point, a.position) <= dist(point, b.position) ? a : b));
+  // Ordering by squared distance is the same ordering, and this is asked of
+  // every site against every trader often enough for the square root to show
+  // up on its own. The `reduce` it replaces also re-measured the running
+  // winner on every step, so this is half the work again.
+  let best = traders[0];
+  let bestDistance = distSq(point, best.position);
+  for (let i = 1; i < traders.length; i++) {
+    const d = distSq(point, traders[i].position);
+    if (d < bestDistance) {
+      bestDistance = d;
+      best = traders[i];
+    }
+  }
+  return best;
 }
 
 /**
@@ -101,6 +169,21 @@ export function nearestTrader(point: Vec2, traders: Trader[]): Trader {
  */
 function isAtPost(villager: Villager): boolean {
   return villager.role === VillagerRole.Worker;
+}
+
+/**
+ * The worker a site can most afford to lose — its greenest hand. Every path
+ * that takes somebody away from a post goes through this rather than through
+ * `find(isAtPost)`, so a site's masters are the last people it gives up
+ * regardless of *why* it is being asked.
+ */
+function leastCommitted(site: ResourceNode | Industry): Villager | null {
+  let best: Villager | null = null;
+  for (const worker of site.workers) {
+    if (!isAtPost(worker)) continue;
+    if (!best || worker.experience < best.experience) best = worker;
+  }
+  return best;
 }
 
 /** How badly the whole civilisation, not just one trader, wants this good. */
@@ -201,7 +284,10 @@ function laborPriority(traders: Trader[], resource: ResourceType): number {
 function sitePriority(site: ResourceNode | Industry, traders: Trader[]): number {
   const wanted = laborPriority(traders, site.resource);
   if (!(site instanceof Industry)) return wanted;
-  const inputSpare = 1 - worstShortage(traders, site.recipe.input);
+  // The scarcest input decides — a two-input recipe is only as staffable as
+  // whichever of the two the realm is shortest of.
+  let inputSpare = 1;
+  for (const { resource } of site.recipe.inputs) inputSpare = Math.min(inputSpare, 1 - worstShortage(traders, resource));
   return wanted * inputSpare;
 }
 
@@ -250,7 +336,9 @@ const everBootstrapped = new WeakSet<Settlement>();
  * its site happens to produce, and the moment it gets a worker the timer
  * clears, so an already-resolved settlement doesn't keep an edge forever.
  */
-const bootstrapWait = new Map<ResourceNode | Industry, number>();
+const bootstrapWait = new Map<ResourceNode | Industry, { waited: number; sweep: number }>();
+/** Which pass of `advanceBootstrapWaits` each entry was last seen on. */
+let bootstrapSweep = 0;
 /** Seconds of being passed over before the wait bonus fully ramps in. */
 const BOOTSTRAP_WAIT_RAMP_SECONDS = 60;
 /** Extra bonus at full ramp, on top of the flat `SETTLEMENT_BOOTSTRAP_BONUS`. */
@@ -274,27 +362,49 @@ function bootstrappingHome(site: ResourceNode | Industry, traders: Trader[]): Se
  * how many call sites) that function is consulted in a single tick.
  */
 function advanceBootstrapWaits(dt: number, ctx: SimContext): void {
-  const sites: (ResourceNode | Industry)[] = [...ctx.nodes, ...ctx.industries];
-  const seen = new Set<ResourceNode | Industry>();
-  for (const site of sites) {
-    seen.add(site);
+  // Whether anywhere is bootstrapping at all is one cheap question about the
+  // settlements; whose home is bootstrapping is an expensive one about every
+  // deposit and every industry in the realm. Asking the cheap one first costs
+  // nothing and skips the whole sweep for good once the last young settlement
+  // finds its feet — which, in a realm of any age, is nearly always.
+  const anyBootstrapping = ctx.traders.some(
+    (t) => t instanceof Settlement && !everBootstrapped.has(t) && t.population < SETTLEMENT_BOOTSTRAP_FLOOR,
+  );
+  if (!anyBootstrapping) {
+    bootstrapWait.clear();
+    return;
+  }
+
+  const sweep = ++bootstrapSweep;
+  const visit = (site: ResourceNode | Industry): void => {
     if (site.workers.length > 0 || !bootstrappingHome(site, ctx.traders)) {
       bootstrapWait.delete(site);
-      continue;
+      return;
     }
-    const waited = (bootstrapWait.get(site) ?? 0) + dt / BOOTSTRAP_WAIT_RAMP_SECONDS;
-    bootstrapWait.set(site, Math.min(1, waited));
-  }
+    const entry = bootstrapWait.get(site);
+    const waited = Math.min(1, (entry?.waited ?? 0) + dt / BOOTSTRAP_WAIT_RAMP_SECONDS);
+    if (entry) {
+      entry.waited = waited;
+      entry.sweep = sweep;
+    } else {
+      bootstrapWait.set(site, { waited, sweep });
+    }
+  };
+  for (const node of ctx.nodes) visit(node);
+  for (const industry of ctx.industries) visit(industry);
+
   // Anything that no longer exists (a node or industry from a prior tick's
   // list — nothing is ever actually removed today, but this keeps the map
-  // from quietly growing if that ever changes) never gets read again.
-  for (const site of bootstrapWait.keys()) if (!seen.has(site)) bootstrapWait.delete(site);
+  // from quietly growing if that ever changes) never gets read again. Stamped
+  // rather than collected into a set, so the common case — a few sites
+  // waiting out of several hundred — costs nothing per tick.
+  for (const [site, entry] of bootstrapWait) if (entry.sweep !== sweep) bootstrapWait.delete(site);
 }
 
 /** Extra pull toward staffing a site whose nearest resident trader is a settlement still finding its first feet. */
 function settlementBootstrapBonus(site: ResourceNode | Industry, traders: Trader[]): number {
   if (!bootstrappingHome(site, traders)) return 0;
-  const waited = bootstrapWait.get(site) ?? 0;
+  const waited = bootstrapWait.get(site)?.waited ?? 0;
   return SETTLEMENT_BOOTSTRAP_BONUS + waited * BOOTSTRAP_WAIT_MAX_BONUS;
 }
 
@@ -338,14 +448,61 @@ function haulageDemand(ctx: SimContext): number {
     // and pricing a real route per node per tick buys precision the answer
     // does not need.
     const home = nearestTrader(node.position, ctx.traders);
-    const oneWay = (dist(node.position, home.position) * ROUTE_DETOUR) / WALK_SPEED;
-    const roundTrip = 2 * oneWay + LOAD_TIME + UNLOAD_TIME;
-    needed += (rate * roundTrip) / CARRY_CAPACITY;
+    needed += (rate * roundTripFrom(node.position, home.position)) / CARRY_CAPACITY;
+  }
+
+  // The second hop, which this used to be blind to.
+  //
+  // Raw goods come out of the ground and are carried to the nearest place
+  // that can take them — that is the loop above, and for most of this
+  // project's life it was the whole of the freight. It stopped being the
+  // whole of it when the processing economy started actually running: a
+  // worked good is made at a workshop and then has to travel *again*, to
+  // whoever is building with it, and a realm of thirty places redistributing
+  // planks, blocks, tools and fittings among themselves is running a great
+  // deal of traffic this formula could not see.
+  //
+  // The consequence was a reserve sized for half the work being done, so the
+  // labour market kept posting people to workplaces well past the point where
+  // another pair of hands on the road was worth more than another pair at a
+  // face. Measured on seed 1234 at day 151: simply doubling this number —
+  // crudely, as an experiment — lifted food actually arriving by a tenth and
+  // wealth income by a fifth, on identical population. That is the signature
+  // of a binding constraint, and the fix is to price the trip rather than to
+  // multiply by two.
+  //
+  // Same shape as the loop above and for the same reason: built from the
+  // production *rate* of each workshop and the length of the road out, both
+  // properties of staffing and geography, never from the pile of goods
+  // waiting — which is a consequence of the carrier count and would oscillate
+  // against it.
+  for (const industry of ctx.industries) {
+    const rate = industry.productionRate;
+    if (rate <= 0) continue;
+    const owner = industry.owner;
+    let nearest = Infinity;
+    for (const trader of ctx.traders) {
+      if (trader === owner) continue;
+      nearest = Math.min(nearest, dist(owner.position, trader.position));
+    }
+    if (!Number.isFinite(nearest)) continue;
+    needed += (rate * roundTripFrom({ x: 0, y: 0 }, { x: nearest, y: 0 })) / CARRY_CAPACITY;
   }
 
   // A ceiling, or a civilisation with a long supply line would put literally
   // everyone on the road and produce nothing for them to carry.
   return Math.max(1, Math.min(Math.round(needed), Math.floor(ctx.villagers.length * MAX_LOGISTICS_SHARE)));
+}
+
+/**
+ * How long one out-and-back costs, straight-line marked up for the fact that
+ * no road runs straight. Cheap on purpose: this is consulted every tick for
+ * every node and every workshop, and pricing a real route each time buys
+ * precision the answer does not need.
+ */
+function roundTripFrom(from: Vec2, to: Vec2): number {
+  const oneWay = (dist(from, to) * ROUTE_DETOUR) / WALK_SPEED;
+  return 2 * oneWay + LOAD_TIME + UNLOAD_TIME;
 }
 
 /** How much longer a real road is than the straight line it approximates. */
@@ -397,18 +554,19 @@ export class TransportSystem {
     const waiting = ctx.villagers.reduce((n, v) => n + (v.isFree ? 1 : 0), 0);
     this.cooldown = DISPATCH_INTERVAL / Math.max(1, Math.min(MAX_DISPATCH_RATE, waiting / WAITING_PER_CARAVAN));
 
+    const idleHomes = idleByHome(ctx.villagers);
     const shipment = findBestShipment({
       nodes: ctx.nodes,
       traders: ctx.traders,
       traffic: ctx.traffic,
       // Priced from whichever idle villager is actually nearest the source —
       // not always the founding village any more.
-      pickupRouteTo: (source) => nearestIdleTo(ctx.villagers, source, ctx.routeBetweenSites)?.route ?? null,
+      pickupRouteTo: (source) => nearestIdleAmong(idleHomes, source, ctx.routeBetweenSites)?.route ?? null,
       routeBetween: (a, b) => ctx.routeBetweenSites(a, b),
     });
     if (!shipment) return;
 
-    const picked = nearestIdleTo(ctx.villagers, shipment.source, ctx.routeBetweenSites);
+    const picked = nearestIdleAmong(idleHomes, shipment.source, ctx.routeBetweenSites);
     if (!picked) return;
     const idle = picked.villager;
 
@@ -416,6 +574,10 @@ export class TransportSystem {
     idle.task = shipment.source;
     idle.resource = shipment.resource;
     idle.destination = shipment.destination;
+    // Set for the whole round, including the empty walk out: someone who has
+    // gone to fetch a cart is travelling with a cart, and arrives at the
+    // pickup no faster than the cart does.
+    idle.convoy = shipment.convoy;
     idle.leg = TransportLeg.ToPickup;
     idle.setRoute(picked.route);
     idle.claim = shipment.amount;
@@ -587,6 +749,12 @@ export class WorkforceSystem {
 
     for (const villager of ctx.villagers) {
       if (villager.role === VillagerRole.Worker && villager.workplace) this.step(villager, dt, ctx);
+      // A trade is kept up by working at it and fades when it isn't — see
+      // `craft.ts`. Everyone is asked once a tick, here rather than in each
+      // of the three systems that can hold a person, so nobody can quietly
+      // fall between them and keep a master's hands forever.
+      if (villager.state === VillagerState.Working) practise(villager, dt);
+      else forget(villager, dt);
     }
   }
 
@@ -620,7 +788,7 @@ export class WorkforceSystem {
     const donor = pool.sort((a, b) => sitePriority(a, ctx.traders) - sitePriority(b, ctx.traders))[0];
     if (!donor) return;
 
-    const worker = donor.workers.find(isAtPost);
+    const worker = leastCommitted(donor);
     if (!worker) return;
     donor.workers.splice(donor.workers.indexOf(worker), 1);
     if (donor instanceof ResourceNode && donor.workers.length === 0) donor.state = NodeState.Connected;
@@ -649,44 +817,28 @@ export class WorkforceSystem {
     // A node's or industry's own growth decides how many hands it can host
     // now — not whichever trader happens to be nearest it — and an industry
     // additionally needs raw material actually on hand before it's worth
-    // anyone's time. More fundamentally, though, an industry doesn't even
-    // enter the running until its own trader has real spare capacity —
-    // "spare" meaning enough population that running one doesn't come at
-    // the food/wood/stone economy's expense, not just "shortage reads zero
-    // this instant". A shortage-based version of this gate was tried and
-    // reverted: it was self-undermining — the moment comfort opened the
-    // gate, a worker got pulled into an industry, which is exactly what
-    // then made the shortage come back, except by then the worker was
-    // already gone. A population floor doesn't have that loop: a place
-    // too small to spare anyone simply never runs an industry, however
-    // briefly comfortable its shelves look.
+    // anyone's time.
     //
-    // Sized against what a workshop is, not against what a civilisation is.
-    // This was 15, a *per-place* headcount, in a game whose entire design
-    // spreads its population across many small places: measured at day 111
-    // on seed 1234, a healthy civilisation of thirty-four people across five
-    // places had a mean population of under seven, and *zero* of the five
-    // cleared the floor. Worse, the loop ran the wrong way — every new
-    // settlement a prospering realm founded divided the population further,
-    // so succeeding made industry strictly less likely, forever. A gate that
-    // gets harder to pass the better the game goes is not a safety rail, it
-    // is an off switch.
+    // There used to be a third condition here: a population floor at the
+    // owning place, to answer "is this a village at all, or a pair of huts
+    // with no business hosting a workshop?". It is gone, and nothing replaced
+    // it, because the question is no longer this system's to ask. A workshop
+    // has to be *built* now (see `construction.ts`), out of material carried
+    // here, and it only ever gets built where the realm is short of the
+    // worked good and this place has raw material going spare. A pair of huts
+    // with no timber surplus has no sawmill to staff — not because a rule
+    // forbids it, but because nobody ever built one. That is the same answer
+    // arrived at one layer down, where it costs something and is visible.
     //
-    // The thing the floor is actually protecting — "don't pull the last
-    // farmer into the mill" — is already handled, and handled better, by
-    // `openingScore` below: every raw-resource opening is ranked against
-    // every industry opening by live civilisation-wide need, so a place
-    // short of food staffs the farm first by construction. This only has to
-    // answer the much smaller question the sort cannot: is this place a
-    // village at all, or a pair of huts with no business hosting a workshop?
-    const INDUSTRY_POPULATION_FLOOR = 6;
-
+    // Worth recording what the floor cost while it stood, since the shape
+    // recurs: it was a per-place headcount in a game whose entire design
+    // spreads population across many small places, so every settlement a
+    // prospering realm founded divided the population further and made
+    // industry strictly *less* likely. A gate that gets harder to pass the
+    // better the game goes is not a safety rail, it is an off switch.
     const nodeOpenings = ctx.nodes.filter((n) => n.isConnected && n.workers.length + n.incomingWorkers < n.workerCapacity);
     const industryOpenings = ctx.industries.filter(
-      (ind) =>
-        ind.owner.population >= INDUSTRY_POPULATION_FLOOR &&
-        ind.hasInput &&
-        ind.workers.length + ind.incomingWorkers < ind.workerCapacity,
+      (ind) => ind.exists && ind.hasInput && ind.workers.length + ind.incomingWorkers < ind.workerCapacity,
     );
     const openings: (ResourceNode | Industry)[] = [...nodeOpenings, ...industryOpenings];
     if (openings.length === 0) return;
@@ -703,7 +855,7 @@ export class WorkforceSystem {
     // Staffed from whoever is actually nearest, not always the founding
     // village's own pool — a wood camp beside a struggling settlement gets
     // worked by that settlement's own idle people first.
-    const nearest = nearestIdleTo(ctx.villagers, targetSite, ctx.routeBetweenSites);
+    const nearest = nearestIdleTo(ctx.villagers, targetSite, ctx.routeBetweenSites, target.resource);
     if (nearest) {
       // Posting every last person, anywhere, would leave nobody free to
       // physically carry anything, so a growing share is always held back
@@ -760,10 +912,25 @@ export class WorkforceSystem {
       (a, b) => priority(a) - priority(b),
     )[0];
     if (!donor) return;
-    if (openingScore(target) - priority(donor) < REASSIGN_MARGIN) return;
 
-    const worker = donor.workers.find(isAtPost);
+    // Whoever the donor can most afford to lose: its greenest hand, not
+    // whichever name happens to sit first on its roster. A site with a
+    // master and an apprentice gives up the apprentice, which is both
+    // obviously right and the thing that lets a long-standing crew survive
+    // being raided at all.
+    const worker = leastCommitted(donor);
     if (!worker) return;
+    // And the gap has to be wider the deeper that person is into a different
+    // trade. A flat margin could never be right for both cases it had to
+    // cover: small enough that a genuinely urgent shortage wins, large enough
+    // that two openings don't trade the same pair of hands forever. Pricing
+    // the *person* instead of the threshold resolves it — a green hand moves
+    // for very little, a lifelong woodcutter only for a famine — and it is
+    // what makes a civilisation settle into tradesmen without anything
+    // deciding that it should.
+    const cost = REASSIGN_MARGIN + COMMITMENT_WEIGHT * commitmentOf(worker, target.resource);
+    if (openingScore(target) - priority(donor) < cost) return;
+
     const route = ctx.routeBetweenSites(worker.home, targetSite);
     if (!route) return;
 
@@ -794,6 +961,12 @@ export class WorkforceSystem {
 
     villager.state = VillagerState.Working;
     villager.route = null;
+    // Taking up the trade, not merely turning up: returning to one's own
+    // craft costs nothing, changing craft costs most of a working life's
+    // skill. See `craft.ts` — this is the one place a resource worker's
+    // trade is ever set, and the arrival is the right moment for it because
+    // it is the point of no return for a reassignment.
+    takeUpCraft(villager, workplace.resource);
     // Settling in, not commuting forever: whoever's actually nearest this
     // node is now who the person who works it lives with, the same way a
     // real farmhand moves near the fields rather than walking in from a
@@ -1074,6 +1247,7 @@ export class IndustrySystem {
 
     villager.state = VillagerState.Working;
     villager.route = null;
+    takeUpCraft(villager, workplace.resource);
     // An industry already has one unambiguous owner — no need to hunt for
     // whoever's nearest, unlike a shared resource node.
     villager.home = workplace.owner;

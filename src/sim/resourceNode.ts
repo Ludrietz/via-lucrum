@@ -1,3 +1,4 @@
+import { crewSkill } from './craft';
 import type { Vec2 } from './geometry';
 import { LandParcel, workedSuitability } from './landUse';
 import {
@@ -7,7 +8,7 @@ import {
   nodeLevelFor,
   type NodeLevelInfo,
 } from './nodeLevel';
-import { NodeState, ResourceType, SiteType } from './types';
+import { NodeState, ResourceType, SiteType, VillagerRole } from './types';
 import type { Villager } from './villager';
 
 /**
@@ -247,15 +248,31 @@ export class ResourceNode {
    * partial staffing that now yields proportionally less than it used to,
    * so piling every last villager onto one node stops being free.
    */
+  /**
+   * Workers who are actually standing at the post, as opposed to listed on
+   * its roster. The two differ whenever one of them has stepped away to carry
+   * a load off themselves (see `workerDelivery.ts`): they stay on the roster
+   * the whole time, deliberately, so the post never reads as an opening — but
+   * a wood that is being felled by nobody is not producing timber, and before
+   * this it carried on producing at full rate with the clearing empty.
+   */
+  get presentWorkers(): Villager[] {
+    return this.workers.filter((w) => w.role === VillagerRole.Worker);
+  }
   get productionRate(): number {
-    if (this.workers.length === 0) return 0;
-    const fraction = this.workers.length / this.workerCapacity;
-    return (this.workerCapacity / this.productionInterval) * fraction ** DIMINISHING_EXPONENT;
+    const present = this.presentWorkers;
+    if (present.length === 0) return 0;
+    const fraction = present.length / this.workerCapacity;
+    // A settled crew is worth more than a shuffled one — see `craft.ts`. This
+    // is the return on leaving people in the trade they took up, and it is
+    // what makes the labour market's churn cost the civilisation something it
+    // can actually measure rather than merely look untidy.
+    return (this.workerCapacity / this.productionInterval) * fraction ** DIMINISHING_EXPONENT * crewSkill(present);
   }
 
   /** Fraction of the current unit that has been produced, for the progress ring. */
   get workProgress(): number {
-    if (this.workers.length === 0) return 0;
+    if (this.presentWorkers.length === 0) return 0;
     return Math.min(1, this.productionTimer / (1 / this.productionRate));
   }
 
@@ -264,7 +281,7 @@ export class ResourceNode {
     // some off themselves rather than stand idle. See `workerDelivery.ts`.
     this.fullSince = this.isFull && this.claimed === 0 ? this.fullSince + dt : 0;
 
-    if (this.workers.length === 0 || this.isFull) {
+    if (this.presentWorkers.length === 0 || this.isFull) {
       this.productionTimer = 0;
       return 0;
     }

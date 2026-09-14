@@ -21,12 +21,22 @@ export const TIER_LABELS: Record<Tier, string> = {
   [Tier.MajorCity]: 'MAJOR CITY',
 };
 
-/** Development points at which each tier is reached. Tuning lives here. */
+/**
+ * Development points at which each tier is reached. Tuning lives here.
+ *
+ * Denominated in *standing built fabric* now, not in accumulated comfort —
+ * see `development.ts` and `construction.ts`. The numbers dropped by better
+ * than an order of magnitude because they changed units: the old ones counted
+ * seconds of being well-stocked, at up to a third of a point a second, and
+ * these count material carried in and put up. A hundred is a place with every
+ * house it can fill; the rungs above it are a place that has also built
+ * workshops, and built them well.
+ */
 export const TIER_THRESHOLDS: ReadonlyArray<{ tier: Tier; threshold: number }> = [
-  { tier: Tier.MajorCity, threshold: 1800 },
-  { tier: Tier.City, threshold: 700 },
-  { tier: Tier.Town, threshold: 280 },
-  { tier: Tier.Village, threshold: 80 },
+  { tier: Tier.MajorCity, threshold: 190 },
+  { tier: Tier.City, threshold: 110 },
+  { tier: Tier.Town, threshold: 55 },
+  { tier: Tier.Village, threshold: 20 },
   { tier: Tier.Hamlet, threshold: 0 },
 ];
 

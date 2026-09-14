@@ -13,7 +13,7 @@ import {
 } from './geometry';
 import type { ResourceNode } from './resourceNode';
 import type { Settlement } from './settlement';
-import { wearEffort } from './traffic';
+import { wearEffort, type TrafficField } from './traffic';
 import type { Village } from './village';
 
 /** Anything a road can start or end at. */
@@ -23,6 +23,8 @@ export type Site = Village | ResourceNode | Settlement;
 const WELD_DISTANCE = 14;
 /** How close the cursor must be to a road to grab it. */
 export const ROAD_GRAB_DISTANCE = 18;
+/** How near a fork the cursor has to be to be pointing at the fork rather than at one of its arms. */
+export const JUNCTION_GRAB_DISTANCE = 20;
 const MIN_ROAD_LENGTH = 40;
 /** How far a place may sit from the road it grew on. */
 const PLACEMENT_REACH = 120;
@@ -63,6 +65,10 @@ export class RoadEdge {
    */
   difficulty = 1;
 
+  /** Last `TrafficField.revision` `wearMean` was measured against. */
+  private wearStamp = -1;
+  private wearMean = 0;
+
   constructor(id: number, a: GraphNode, b: GraphNode, points: Vec2[], usage = 0) {
     this.id = id;
     this.a = a;
@@ -85,28 +91,159 @@ export class RoadEdge {
     return this.length * this.difficulty;
   }
 
+  /**
+   * How packed down this stretch is, averaged along it.
+   *
+   * A road's wear is a property of the road and the ground, not of whoever is
+   * asking — so it is measured once per change to the traffic field and read
+   * back from there. The pathfinder asks this for every edge it relaxes, of
+   * every search, and there are thousands of searches in a tick; sampling the
+   * polyline afresh each time made the mean wear of forty-odd roads the single
+   * most expensive thing in the simulation, at better than a quarter of the
+   * whole tick.
+   */
+  wear(traffic: TrafficField): number {
+    if (this.wearStamp !== traffic.revision) {
+      this.wearStamp = traffic.revision;
+      this.wearMean = traffic.wearAlong(this.points);
+    }
+    return this.wearMean;
+  }
+
   /** Points oriented so they start at `from`. */
   pointsFrom(from: GraphNode): Vec2[] {
     return from === this.a ? this.points : [...this.points].reverse();
   }
 }
 
-/** A concrete walkable route: one polyline plus the edges it crosses. */
+/** A route's polyline, deferred until something actually walks or draws it. */
+interface DeferredGeometry {
+  length: number;
+  assemble: () => Vec2[];
+}
+
+/**
+ * A concrete walkable route: one polyline plus the edges it crosses.
+ *
+ * **Pricing a trip and walking one are different questions, and only the
+ * second needs geometry.** Every route the dispatcher considers is scored on
+ * two numbers — how much effort the ground costs and how worn it is — both of
+ * which come from the edges. Only the single route that actually wins gets
+ * walked, sampled, or deposited along. So the polyline is assembled on first
+ * demand rather than in the constructor: the losing thousands never pay for a
+ * few hundred copied points and a cumulative-length table apiece, which on its
+ * own was running a third of the tick into the garbage collector.
+ */
 export class Route {
-  readonly points: Vec2[];
   readonly edges: RoadEdge[];
-  readonly cum: number[];
   /** Geometric length, which is what movement along the road uses. */
   readonly length: number;
   /** Terrain-weighted effort, which is what choosing between routes uses. */
   readonly resistance: number;
 
-  constructor(points: Vec2[], edges: RoadEdge[]) {
-    this.points = points;
+  /** How to assemble the polyline, until somebody asks for it. */
+  private assemble: (() => Vec2[]) | null = null;
+  private builtPoints: Vec2[] | null = null;
+  private builtCum: number[] | null = null;
+  private wearStamp = -1;
+  private wearMean = 0;
+  private weakestStamp = -1;
+  private weakestValue = 0;
+
+  /**
+   * Either the polyline itself, or — for a route the pathfinder has just found
+   * and nobody has yet decided to walk — how to build it and how long it is.
+   *
+   * The deferred length is the sum of the edges' own, which is exact rather
+   * than an estimate: an edge's points are pinned to its endpoints, so
+   * stringing them together shares those points and adds no length at a joint.
+   */
+  constructor(geometry: Vec2[] | DeferredGeometry, edges: RoadEdge[]) {
     this.edges = edges;
-    this.cum = cumulativeLengths(points);
-    this.length = this.cum[this.cum.length - 1];
     this.resistance = edges.reduce((sum, edge) => sum + edge.resistance, 0);
+
+    if (Array.isArray(geometry)) {
+      this.builtPoints = geometry;
+      this.assemble = null;
+      this.length = polylineLength(geometry);
+    } else {
+      this.builtPoints = null;
+      this.assemble = geometry.assemble;
+      this.length = geometry.length;
+    }
+  }
+
+  get points(): Vec2[] {
+    if (this.builtPoints === null) this.builtPoints = this.assemble!();
+    return this.builtPoints;
+  }
+
+  get cum(): number[] {
+    if (this.builtCum === null) this.builtCum = cumulativeLengths(this.points);
+    return this.builtCum;
+  }
+
+  /**
+   * How worn the ground along this route is.
+   *
+   * A route's points are its edges' points strung together, so the mean over
+   * the route is the mean over its edges weighted by how many points each
+   * contributes — and every edge already knows its own. That turns a walk over
+   * a few hundred polyline points into a sum over the three or four roads the
+   * route actually uses, and it comes out of the same cache the pathfinder
+   * fills, so a busy tick measures each road once however many routes cross it.
+   *
+   * The one difference from sampling the route's own polyline is that a point
+   * where two roads meet is counted once for each of them rather than once for
+   * the route. That is a couple of points in a few hundred, on a reading that
+   * then goes through `0.4 + 0.6 * quality`; it is not worth keeping a second,
+   * per-route sampling path alive to avoid.
+   */
+  wear(traffic: TrafficField): number {
+    if (this.wearStamp === traffic.revision) return this.wearMean;
+    this.wearStamp = traffic.revision;
+
+    if (this.edges.length === 0) {
+      this.wearMean = traffic.wearAlong(this.points);
+      return this.wearMean;
+    }
+
+    let weighted = 0;
+    let count = 0;
+    for (const edge of this.edges) {
+      weighted += edge.wear(traffic) * edge.points.length;
+      count += edge.points.length;
+    }
+    this.wearMean = count > 0 ? weighted / count : 0;
+    return this.wearMean;
+  }
+
+  /**
+   * How packed down the *worst* stretch of this route is.
+   *
+   * The average says whether a route is broadly good; this says whether it can
+   * be relied on, which is a different question and the one that decides what
+   * can travel it (see `convoyFor`). A route that is highway for nine tenths
+   * of its length and a bog for the last stretch is a bog: a cart that cannot
+   * get through the gap does not care how fine the rest of it was.
+   *
+   * Measured per edge rather than by sampling the polyline, so it costs the
+   * same cached per-edge readings `wear` already uses and never forces a
+   * route's points to be assembled.
+   */
+  weakestWear(traffic: TrafficField): number {
+    if (this.weakestStamp === traffic.revision) return this.weakestValue;
+    this.weakestStamp = traffic.revision;
+
+    if (this.edges.length === 0) {
+      this.weakestValue = traffic.weakestAlong(this.points);
+      return this.weakestValue;
+    }
+
+    let weakest = Infinity;
+    for (const edge of this.edges) weakest = Math.min(weakest, edge.wear(traffic));
+    this.weakestValue = Number.isFinite(weakest) ? weakest : 0;
+    return this.weakestValue;
   }
 
   /** Mean difficulty of the ground this route crosses. */
@@ -120,6 +257,71 @@ export class Route {
 
   reversed(): Route {
     return new Route([...this.points].reverse(), [...this.edges].reverse());
+  }
+
+  /** Whether the polyline has actually been needed yet — for tests and probes. */
+  get isAssembled(): boolean {
+    return this.builtPoints !== null;
+  }
+}
+
+/**
+ * Walks a finished search back from a goal to the route that reaches it.
+ *
+ * The polyline is left deferred — see `Route` — so a reconstruction costs
+ * only the handful of edges the route actually crosses.
+ */
+function buildRoute(
+  start: GraphNode,
+  goal: GraphNode,
+  cameFrom: Map<GraphNode, { node: GraphNode; edge: RoadEdge }>,
+): Route | null {
+  if (start !== goal && !cameFrom.has(goal)) return null;
+
+  const edges: RoadEdge[] = [];
+  const chain: GraphNode[] = [goal];
+  let cursor = goal;
+  while (cursor !== start) {
+    const step = cameFrom.get(cursor);
+    if (!step) return null;
+    edges.unshift(step.edge);
+    chain.unshift(step.node);
+    cursor = step.node;
+  }
+
+  return new Route(
+    {
+      length: edges.reduce((sum, edge) => sum + edge.length, 0),
+      assemble: () => {
+        const points: Vec2[] = [{ ...start.position }];
+        for (let i = 0; i < edges.length; i++) {
+          const oriented = edges[i].pointsFrom(chain[i]);
+          for (let p = 1; p < oriented.length; p++) points.push({ ...oriented[p] });
+        }
+        return points;
+      },
+    },
+    edges,
+  );
+}
+
+/** The result of one full search: every route out of a single place. */
+export class RouteTree {
+  constructor(
+    private readonly network: RoadNetwork,
+    private readonly start: GraphNode,
+    private readonly cameFrom: Map<GraphNode, { node: GraphNode; edge: RoadEdge }>,
+  ) {}
+
+  /**
+   * A route to one place, or null if it is not on the network or is where the
+   * search started — the same two answers `routeBetween` gives, for the same
+   * reasons.
+   */
+  to(site: Site): Route | null {
+    const goal = this.network.nodeForSite(site);
+    if (!goal || goal === this.start) return null;
+    return buildRoute(this.start, goal, this.cameFrom);
   }
 }
 
@@ -149,10 +351,10 @@ export class RoadNetwork {
    * construction — and defaults to "untouched" so a network with nothing
    * wired up yet still routes purely on terrain, as before.
    */
-  private wearAlong: (points: Vec2[]) => number = () => 0;
+  private traffic: TrafficField | null = null;
 
-  setWearLookup(fn: (points: Vec2[]) => number): void {
-    this.wearAlong = fn;
+  setTraffic(field: TrafficField): void {
+    this.traffic = field;
   }
 
   // ------------------------------------------------------------------ lookup
@@ -470,10 +672,38 @@ export class RoadNetwork {
     return this.findRoute(a, b);
   }
 
+  /**
+   * Every route out of one place, from a single search.
+   *
+   * Dijkstra already visits the whole reachable network on the way to any one
+   * goal, so asking it separately for each of two hundred destinations throws
+   * away almost all of its work two hundred times. Every caller that wants
+   * more than one route out of the same place — the world's reachability
+   * sweep, and the trade dispatcher pricing one source against every
+   * destination in the realm — wants this instead.
+   */
+  routeTree(from: Site): RouteTree | null {
+    const start = this.nodeForSite(from);
+    if (!start) return null;
+    return new RouteTree(this, start, this.search(start, null));
+  }
+
   private findRoute(start: GraphNode, goal: GraphNode): Route | null {
+    return buildRoute(start, goal, this.search(start, goal));
+  }
+
+  /**
+   * Cheapest known way to every node, stopping early once `goal` is settled.
+   * Pass `null` for a goal to expand the whole reachable network.
+   */
+  private search(
+    start: GraphNode,
+    goal: GraphNode | null,
+  ): Map<GraphNode, { node: GraphNode; edge: RoadEdge }> {
     const best = new Map<GraphNode, number>([[start, 0]]);
     const cameFrom = new Map<GraphNode, { node: GraphNode; edge: RoadEdge }>();
     const open: GraphNode[] = [start];
+    const queued = new Set<GraphNode>([start]);
     const closed = new Set<GraphNode>();
 
     while (open.length > 0) {
@@ -483,6 +713,7 @@ export class RoadNetwork {
         if ((best.get(open[i]) ?? Infinity) < (best.get(open[index]) ?? Infinity)) index = i;
       }
       const current = open.splice(index, 1)[0];
+      queued.delete(current);
       if (current === goal) break;
       closed.add(current);
 
@@ -496,35 +727,20 @@ export class RoadNetwork {
         // that's seen heavy traffic is genuinely easier going than a fresh
         // one cut through the same terrain, so it can win out over a
         // shorter but untouched alternative.
-        const cost = (best.get(current) ?? Infinity) + edge.resistance * wearEffort(this.wearAlong(edge.points));
+        const wear = this.traffic ? edge.wear(this.traffic) : 0;
+        const cost = (best.get(current) ?? Infinity) + edge.resistance * wearEffort(wear);
         if (cost < (best.get(next) ?? Infinity)) {
           best.set(next, cost);
           cameFrom.set(next, { node: current, edge });
-          if (!open.includes(next)) open.push(next);
+          if (!queued.has(next)) {
+            queued.add(next);
+            open.push(next);
+          }
         }
       }
     }
 
-    if (start !== goal && !cameFrom.has(goal)) return null;
-
-    const edges: RoadEdge[] = [];
-    const chain: GraphNode[] = [goal];
-    let cursor = goal;
-    while (cursor !== start) {
-      const step = cameFrom.get(cursor);
-      if (!step) return null;
-      edges.unshift(step.edge);
-      chain.unshift(step.node);
-      cursor = step.node;
-    }
-
-    const points: Vec2[] = [{ ...start.position }];
-    for (let i = 0; i < edges.length; i++) {
-      const oriented = edges[i].pointsFrom(chain[i]);
-      points.push(...oriented.slice(1).map((p) => ({ ...p })));
-    }
-
-    return new Route(points, edges);
+    return cameFrom;
   }
 
   // ------------------------------------------------------------------ update

@@ -93,18 +93,62 @@ export interface SurveySource {
   /** A point, or a polyline for a road corridor. */
   readonly path: Vec2[];
   readonly horizon: number;
+  /**
+   * The path's bounding box, for sources that have one worth testing.
+   *
+   * Almost every question put to the survey is "can *anything* see this
+   * point", asked of a few hundred deposits against a few hundred sources, of
+   * which the roads are polylines hundreds of points long. Walking a road's
+   * every segment to find out it is on the far side of the map is the whole
+   * cost of the answer; a box rejects it in four comparisons. The box is a
+   * lower bound on the real distance, so the answer is unchanged — this only
+   * declines to compute the ones that cannot possibly win.
+   */
+  readonly bounds?: { minX: number; minY: number; maxX: number; maxY: number };
+}
+
+/** A survey source, with whatever cheap rejection its shape allows precomputed. */
+export function surveySource(path: Vec2[], horizon: number): SurveySource {
+  if (path.length <= 1) return { path, horizon };
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of path) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return { path, horizon, bounds: { minX, minY, maxX, maxY } };
+}
+
+/** How far a point lies outside a box — 0 inside it. */
+function boxDistance(box: NonNullable<SurveySource['bounds']>, point: Vec2): number {
+  const dx = Math.max(0, box.minX - point.x, point.x - box.maxX);
+  const dy = Math.max(0, box.minY - point.y, point.y - box.maxY);
+  return dx === 0 ? dy : dy === 0 ? dx : Math.hypot(dx, dy);
 }
 
 /** How far outside every survey source a point sits — 0 if it is known. */
 export function distanceToSurvey(sources: readonly SurveySource[], point: Vec2): number {
   let nearest = Infinity;
   for (const source of sources) {
-    const d =
-      source.path.length === 1
-        ? dist(source.path[0], point)
-        : closestPointOnPolyline(source.path, point).distance;
-    nearest = Math.min(nearest, d - source.horizon);
-    if (nearest <= 0) return 0;
+    if (source.path.length === 1) {
+      const d = dist(source.path[0], point) - source.horizon;
+      if (d <= 0) return 0;
+      if (d < nearest) nearest = d;
+      continue;
+    }
+
+    // Nothing inside the box can be nearer than the box itself, so a source
+    // whose box already loses cannot win.
+    if (source.bounds && boxDistance(source.bounds, point) - source.horizon >= nearest) continue;
+
+    const d = closestPointOnPolyline(source.path, point).distance - source.horizon;
+    if (d <= 0) return 0;
+    if (d < nearest) nearest = d;
   }
   return Math.max(0, nearest);
 }

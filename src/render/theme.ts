@@ -1,6 +1,6 @@
 import { IndustryType } from '../sim/industry';
 import { ResourceType, SiteType } from '../sim/types';
-import { WEAR_FULL } from '../sim/traffic';
+import { ROAD_DEVELOPED } from '../sim/traffic';
 
 /** Parchment cartography underneath, Mini Metro information design on top. */
 export const COLORS = {
@@ -53,6 +53,8 @@ export const RESOURCE_COLORS: Record<ResourceType, number> = {
   [ResourceType.Planks]: COLORS.planks,
   [ResourceType.StoneBlocks]: COLORS.stoneBlocks,
   [ResourceType.Tools]: COLORS.tools,
+  [ResourceType.Fittings]: COLORS.tools,
+  [ResourceType.Bread]: COLORS.farm,
 };
 
 export const RESOURCE_LABELS: Record<ResourceType, string> = {
@@ -63,6 +65,8 @@ export const RESOURCE_LABELS: Record<ResourceType, string> = {
   [ResourceType.Planks]: 'PLANKS',
   [ResourceType.StoneBlocks]: 'STONE BLOCKS',
   [ResourceType.Tools]: 'TOOLS',
+  [ResourceType.Fittings]: 'FITTINGS',
+  [ResourceType.Bread]: 'BREAD',
 };
 
 /** Job title a villager takes when posted to each kind of industry. */
@@ -70,6 +74,8 @@ export const INDUSTRY_LABELS: Record<IndustryType, string> = {
   [IndustryType.Sawmill]: 'Sawyers',
   [IndustryType.Masonry]: 'Masons',
   [IndustryType.Smithy]: 'Smiths',
+  [IndustryType.Joinery]: 'Joiners',
+  [IndustryType.Bakery]: 'Bakers',
 };
 
 export const SITE_LABELS: Record<SiteType, string> = {
@@ -94,22 +100,34 @@ export const WORKER_LABELS: Record<SiteType, string> = {
  * than in steps, so one road can be a highway where the traffic converges and
  * a trail out at its far end.
  */
-const TRAIL_WIDTH = 3;
-const HIGHWAY_WIDTH = 22;
+const TRAIL_WIDTH = 2.5;
+const HIGHWAY_WIDTH = 20;
 
+/**
+ * The exponent is above one, and that is the whole of "roads start as paths".
+ *
+ * Below one, a road spends almost none of its life looking like a track: a
+ * tenth of the traffic it takes to make a highway already bought a fifth of
+ * the width, so the first cart through the woods drew something that read as
+ * an established way, and every road in the realm looked broadly alike within
+ * minutes of being laid. Above one the early gains are slow and the late ones
+ * quick, which is both what the eye wants — a path that stays a path until it
+ * has genuinely earned otherwise — and what the traffic actually does, now
+ * that a well-used route carries heavier loads that pack it harder still.
+ */
 export function roadWidth(wear: number): number {
-  return TRAIL_WIDTH + (HIGHWAY_WIDTH - TRAIL_WIDTH) * Math.pow(wearFraction(wear), 0.7);
+  return TRAIL_WIDTH + (HIGHWAY_WIDTH - TRAIL_WIDTH) * Math.pow(wearFraction(wear), 1.15);
 }
 
-/** Where a stretch of road sits between untouched ground and fully packed. */
+/** Where a stretch of road sits between a fresh track and a made trunk road. */
 export function wearFraction(wear: number): number {
-  return Math.max(0, Math.min(1, wear / WEAR_FULL));
+  return Math.max(0, Math.min(1, wear / ROAD_DEVELOPED));
 }
 
 /** The names are only for the UI; the drawing itself is continuous. */
 export function roadTierName(wear: number): string {
-  if (wear >= WEAR_FULL * 0.5) return 'HIGHWAY';
-  if (wear >= WEAR_FULL * 0.2) return 'ROAD';
+  if (wear >= ROAD_DEVELOPED * 0.5) return 'HIGHWAY';
+  if (wear >= ROAD_DEVELOPED * 0.2) return 'ROAD';
   return 'TRAIL';
 }
 
@@ -142,7 +160,7 @@ function lerpColor(a: number, b: number, t: number): number {
 }
 
 function roadStopColor(wear: number, channel: 'road' | 'casing'): number {
-  const t = Math.max(0, Math.min(1, wear / WEAR_FULL));
+  const t = wearFraction(wear);
   let lower = ROAD_STOPS[0];
   let upper = ROAD_STOPS[ROAD_STOPS.length - 1];
   for (let i = 0; i < ROAD_STOPS.length - 1; i++) {

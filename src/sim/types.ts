@@ -18,6 +18,10 @@ export enum ResourceType {
   Planks = 'planks',
   StoneBlocks = 'stoneBlocks',
   Tools = 'tools',
+  /** Baked grain. Feeds more people than the grain it was milled and baked from. */
+  Bread = 'bread',
+  /** Joinery and ironwork: the finished carpentry a house has and a shed does not. */
+  Fittings = 'fittings',
 }
 
 /**

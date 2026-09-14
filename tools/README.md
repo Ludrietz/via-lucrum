@@ -53,6 +53,18 @@ nearest place that can receive them — and stops adding sites once most of the
 workforce is already out walking. Comparing the two is how over-expansion
 gets tested.
 
+### The stand-in player is part of the experiment
+
+`surveyor.ts` is a decision-making agent inside every measurement this harness
+makes, and it needs the same scrutiny as the simulation does. It once refused
+to connect any site whose good it did not currently want badly enough, which
+meant it **stopped playing whenever the economy was doing well** — so every
+change that genuinely improved supply came back looking like a regression, and
+the bias pointed the same direction every time. Two experiments were graded
+wrong before it was found. If a run shows expansion stalling while Expansion
+Capacity piles up unspent, suspect the player before the simulation.
+
+
 ### Scouting
 
 The stand-in player also runs tracks out into country nobody has looked at,
@@ -78,11 +90,55 @@ standing is the expected shape, not a bug.
   of eight compass sectors they fall in, how many frontier slots are filled,
   ghost towns, and deposits still hidden close to home. Run with
   `node tools/.build/batch.mjs --seeds 8 --days 75`.
+
+  **Run this for performance changes too, not just balance ones.** A caching
+  pass that was meant to be behaviour-neutral shifted mean settlements from
+  4.2 to 5.3 on unchanged populations and produced a ghost town; the first
+  seed matched the baseline on every column and the regression was only
+  visible in the mean across six. See the entry in `vision.md`.
 - `probe.ts` — the same questions for a single seed, over time.
+The `playtest.ts` report has two blocks worth knowing about. **BUILT** is
+what each place has actually put up (see `src/sim/construction.ts`), and the
+columns to read together are `want` and `stock`: high appetite with an empty
+shelf is the trade network failing that place, while material sitting beside
+no appetite is a place that has finished building. Those are different
+problems and every other column in the report shows them identically.
+**TRADES** is whether the labour market has settled into tradesmen at all
+(see `src/sim/craft.ts`) — churn is otherwise invisible, since a realm that
+reassigns everyone weekly and one that leaves people alone look the same in
+population and production until you notice the second is producing a third
+more for the same headcount.
+
 - `indprobe.ts` — every industry gate at every place, for when the processing
   economy is not running and it is not obvious which of the several gates is
   the one saying no.
-- `perf.ts` — milliseconds per tick as the realm grows.
+- `perf.ts` — milliseconds per tick as the realm grows. The single most
+  useful file here when the game feels slow: it separates "the simulation is
+  slow" from "the renderer is slow" in one run, with no browser involved.
+  Profile it properly with node's own sampler rather than guessing —
+  `node --cpu-prof tools/.build/perf.mjs 1234 90` writes a `.cpuprofile`
+  that says exactly where the tick went.
+- `bench.ts` — the other half of that question: **milliseconds per frame**,
+  in the real game, layer by layer. `perf.ts` cannot see the renderer and a
+  fresh browser tab cannot reach a big realm, so this fast-forwards a world
+  headless with the same stand-in player, hands it to the real `GameScene`,
+  and then reports the frame it actually costs.
+
+  ```
+  npm run dev
+  # then open:
+  http://localhost:5173/bench.html?days=90&seed=1234
+  ```
+
+  | query | meaning |
+  | --- | --- |
+  | `days` | how old a realm to build before measuring (the page blocks while it builds — 90 days takes a few seconds) |
+  | `seed` | the same seed `?seed=` and the headless harnesses use |
+  | `window` | seconds of frames to average over (default 5) |
+
+  It prints fps, total `scene.update`, how much of that was the simulation,
+  the size of Phaser's display list, and a line per render layer. Dev-only,
+  and not reachable from the game.
 - `mapdump.ts` — renders a finished run as an SVG.
 - `snaketest.ts` — a narrower, adversarial scenario: always claim whichever
   affordable frontier offer continues heading the way expansion was already

@@ -21,46 +21,78 @@ export const HOUSING_LEVELS: readonly HousingLevelInfo[] = [
   { level: 5, capacity: 80 },
 ];
 
-/** Cumulative construction progress needed to reach each level above the first. */
-export const HOUSING_INVESTMENT_THRESHOLDS: readonly number[] = [0, 20, 60, 140, 300];
-
 /**
- * Progress per second while actually building. Drawing this straight out of
- * wood (or any other raw good) was tried first and reverted, twice: housing
- * is one more claim competing with node investment, industries and
- * ordinary demand for the exact same tight resource, and with several
- * settlements each drawing on it at once — sometimes gently, sometimes
- * more — it reliably tipped the whole wood economy into a starvation
- * spiral that crashed population civilisation-wide, once even to zero.
- * Progress here is unattached to any shelf: a place under real pressure
- * just works on more room over time, the same way tier progress accrues
- * from being comfortable rather than from spending anything concrete.
+ * Residents one point of standing fabric houses, and the roof over the heads
+ * of anyone living somewhere that has built nothing at all.
+ *
+ * Capacity is read off the fabric *continuously*, and the level table above
+ * survives only as a label for the inspector. It used to be the other way
+ * round — five rungs with hard thresholds — and once housing started costing
+ * real material that turned into a genuine trap at the top of the ladder. A
+ * place at the last rung wanted nothing more, so it built nothing, so its
+ * fabric decayed, so it dropped a rung and lost twenty-five of its eighty
+ * places overnight, so its population fell, and it then rebuilt the same rung
+ * to lose it again. Measured on seed 1234 at day 91: the capital sat at
+ * exactly 100.0 dwelling fabric, losing 3.6 a day with eighty-seven fabric of
+ * material on its own shelves and no project it was willing to spend them on,
+ * while its population fell from 65 to 52.
+ *
+ * A cliff in a quantity that decays is a cliff something will sit astride.
+ * Read continuously there is no top rung to stall at: a place always has
+ * *some* reason to keep building, upkeep is an ordinary project rather than a
+ * special case, and how big a place can get is settled by the three things
+ * that should settle it — the ground it has, the material it can get, and how
+ * much of that material simply goes on keeping the roofs on.
  */
-const HOUSING_BUILD_RATE = 0.5;
+const RESIDENTS_PER_FABRIC = 0.7;
+const HOUSING_BASE = 10;
 
-function housingLevelFor(invested: number): number {
+/*
+ * Housing used to be a "cumulative construction progress" that accrued at a
+ * flat half a point a second for any place that felt crowded, attached to no
+ * resource at all. The comment justifying that is worth remembering, because
+ * it was right about the thing it was avoiding: drawing housing straight out
+ * of wood was tried twice and reverted twice, both times because it competed
+ * head-on with ordinary demand, node investment and the industries for the
+ * same tight timber, and reliably tipped the wood economy into a starvation
+ * spiral that crashed population civilisation-wide.
+ *
+ * What was wrong was the *claim*, not the idea that houses cost something. A
+ * claim that can only ever eat genuine surplus — material above what the
+ * place wants on hand for its own living — cannot start that spiral, because
+ * in a tight economy it simply builds nothing. That is what
+ * `construction.ts` does, and it is why houses can cost material again.
+ *
+ * The numbers are denominated in goods somebody actually carried here: a
+ * hundred residents want roughly a hundred and thirty fabric, which is a
+ * hundred and thirty logs, or — if the place has a sawmill — forty-three
+ * planks. That gap is the point.
+ */
+
+/** How many residents a trader's housing can hold right now, read straight off what it has built. */
+export function housingCapacity(trader: Trader): number {
+  return HOUSING_BASE + trader.dwellings * RESIDENTS_PER_FABRIC;
+}
+
+/** How many residents a given amount of standing dwelling fabric would house. */
+export function capacityForFabric(dwellings: number): number {
+  return HOUSING_BASE + dwellings * RESIDENTS_PER_FABRIC;
+}
+
+/** Which rung of the ladder a place's housing reads as — a label for the inspector, nothing more. */
+export function housingLevelFor(dwellings: number): number {
+  const capacity = capacityForFabric(dwellings);
   let level = HOUSING_LEVELS[0].level;
-  for (let i = 0; i < HOUSING_INVESTMENT_THRESHOLDS.length; i++) {
-    if (invested >= HOUSING_INVESTMENT_THRESHOLDS[i]) level = HOUSING_LEVELS[i].level;
+  for (const info of HOUSING_LEVELS) {
+    if (capacity >= info.capacity) level = info.level;
   }
   return level;
 }
 
-function isMaxHousingLevel(level: number): boolean {
-  return level >= HOUSING_LEVELS[HOUSING_LEVELS.length - 1].level;
-}
-
-/** How many residents a trader's housing can hold right now, read straight off its investment. */
-export function housingCapacity(trader: Trader): number {
-  const level = housingLevelFor(trader.housingInvestment);
-  return HOUSING_LEVELS[level - 1].capacity;
-}
-
-/** The progress total that would unlock the next level of housing, if any. */
-export function nextHousingThreshold(trader: Trader): number | null {
-  const level = housingLevelFor(trader.housingInvestment);
-  if (isMaxHousingLevel(level)) return null;
-  return HOUSING_INVESTMENT_THRESHOLDS[level];
+/** The capacity the next rung would bring, if this place is not already past the last one. */
+export function nextHousingCapacity(trader: Trader): number | null {
+  const capacity = housingCapacity(trader);
+  return HOUSING_LEVELS.find((info) => info.capacity > capacity)?.capacity ?? null;
 }
 
 /**
@@ -91,30 +123,4 @@ const ROOM_TO_BUILD = 0.75;
  */
 export function hasRoomToBuild(trader: Trader): boolean {
   return !trader.ground.starved && trader.roomSatisfaction >= ROOM_TO_BUILD;
-}
-
-/**
- * A place works on more housing whenever it's genuinely crowded — most of
- * its current capacity actually occupied, not only once it's overflowing,
- * since population eases toward its target and bounces around whatever a
- * place can support rather than sitting pinned exactly at the ceiling.
- * Progress pauses whenever it isn't crowded: a place with room to spare has
- * no reason to keep building more.
- *
- * And whenever it has nowhere to put them. Houses need ground to stand on,
- * and a place whose sprawl has run out of country it can take — the valley
- * ends, the river turns, the neighbouring works hold everything worth having —
- * cannot build its way past that. This is where that fact enters the economy,
- * and it is the mechanism behind the whole rural/urban split: nothing tells a
- * village hemmed in by four mines that it may not become a city, it simply
- * never gets the room to house the people a city needs, and `tier.ts`'s
- * population bar does the rest.
- */
-export function advanceHousing(trader: Trader, dt: number): void {
-  const level = housingLevelFor(trader.housingInvestment);
-  if (isMaxHousingLevel(level)) return;
-  if (trader.population < HOUSING_LEVELS[level - 1].capacity * 0.8) return;
-  if (!hasRoomToBuild(trader)) return;
-
-  trader.housingInvestment += HOUSING_BUILD_RATE * dt;
 }

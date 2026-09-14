@@ -7,7 +7,8 @@ import { Tier, TIER_FOOTPRINT, tierFor } from './tier';
 /**
  * The first place. It is built the same way everything else on the map is:
  * a population that rises and falls with how well it is fed, and a tier read
- * off how well it has kept itself in wood and stone — see `development.ts`.
+ * off what it has actually built and keeps standing — see `construction.ts`
+ * and `development.ts`.
  * It owns none of its own population — that lives in `World`'s one shared
  * roster, same as every settlement's — so there is nothing here a place that
  * grew up on its own doesn't also have.
@@ -24,7 +25,7 @@ export class Village {
   readonly outgoing = emptyAmounts();
   /** Rolling record of what has been arriving, per resource. */
   readonly throughput = emptyAmounts();
-  /** What tier is read off — see `development.ts`. Starts at zero, a Hamlet, same as anywhere else. */
+  /** What tier is read off: standing built fabric — see `development.ts`. Starts at zero, a Hamlet, same as anywhere else. */
   development = 0;
   /** Synced once a tick by `World` from the shared roster — see `World.populationAt`. */
   population = 0;
@@ -32,8 +33,14 @@ export class Village {
   wealth = 0;
   /** Decaying accumulator behind `wealthIncomePerMin` — the same trick `throughput` uses. */
   wealthIncome = 0;
-  /** Cumulative wood put toward housing — see `housing.ts` for what this actually unlocks. */
-  housingInvestment = 0;
+  /** Fabric standing in houses — see `construction.ts`, and `housing.ts` for what it holds. */
+  dwellings = 0;
+  /** What the standing fabric was built out of, 0 (log and rubble) to 1 (plank and dressed stone). */
+  fabricQuality = 0;
+  /** How much building this place has in front of it, 0 to 1 — what its appetite for material is read off. */
+  buildAppetite = 0;
+  /** Net fabric laid per hour on the last pass — what the development trend is read off. */
+  fabricRate = 0;
   /** One of each kind, present from the start; inert until staffed — see `industry.ts`. */
   readonly industries: Industry[] = Object.values(IndustryType).map((type) => new Industry(type, this));
 
