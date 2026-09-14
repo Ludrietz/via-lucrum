@@ -8,12 +8,15 @@
  */
 
 import { shortage, sustainablePopulation, throughputPerMin, wealthIncomePerMin } from '../src/sim/economy';
+import { materialOnHand } from '../src/sim/construction';
 import { hasRoomToBuild, housingCapacity } from '../src/sim/housing';
+import { IndustryType } from '../src/sim/industry';
 import { urbanityLabel } from '../src/sim/landUse';
 import { createWorldConfig } from '../src/sim/map';
 import { METRES_PER_UNIT } from '../src/sim/scale';
 import { TIER_LABELS } from '../src/sim/tier';
 import { ResourceType, VillagerRole } from '../src/sim/types';
+import { Convoy, CONVOY_CLASSES, convoyFor } from '../src/sim/villager';
 import { World, type WorldConfig } from '../src/sim/world';
 import { Surveyor } from './surveyor';
 
@@ -186,7 +189,7 @@ export function printPlaces(world: World): void {
   // eslint-disable-next-line no-console
   const log = console.log;
   log('\nPLACES');
-  log('  name              tier        pop  dev     wealth  inc/min  food  wood  stone  iron  plk  blk  tls  ind');
+  log('  name              tier        pop  dev     wealth  inc/min  food  wood  stone  iron  plk  blk  tls  fit  ind');
   for (const trader of world.traders) {
     const industries = trader.industries.filter((i) => i.workers.length > 0).map((i) => i.type).join(',');
     log(
@@ -205,11 +208,145 @@ export function printPlaces(world: World): void {
       )} ${pad(Math.round(trader.storage[ResourceType.StoneBlocks]), 4)} ${pad(
         Math.round(trader.storage[ResourceType.Tools]),
         4,
-      )} ${industries}`,
+      )} ${pad(Math.round(trader.storage[ResourceType.Fittings]), 4)} ${industries}`,
     );
   }
   log(`  civ sustainable population: ${f1(world.traders.reduce((s, t) => s + sustainablePopulation(t), 0))}`);
+  printBuilt(world);
+  printCrafts(world);
+  printHaulage(world);
   printLand(world);
+}
+
+/**
+ * What is actually travelling the roads, and what the roads will actually
+ * take.
+ *
+ * The question this exists to answer is "is a long haul still being walked by
+ * hand?" — which is invisible everywhere else in this report, because a
+ * civilisation moving its goods the hard way and one moving them by waggon
+ * look identical in every other column until you notice the first one has
+ * three times as many people out on the road.
+ */
+function printHaulage(world: World): void {
+  // eslint-disable-next-line no-console
+  const log = console.log;
+
+  const byConvoy = new Map<Convoy, { n: number; length: number }>();
+  for (const villager of world.villagers) {
+    if (villager.role !== VillagerRole.Transporter) continue;
+    const entry = byConvoy.get(villager.convoy) ?? { n: 0, length: 0 };
+    entry.n++;
+    entry.length += villager.route?.length ?? 0;
+    byConvoy.set(villager.convoy, entry);
+  }
+  const mix = [...byConvoy.entries()]
+    .map(([convoy, e]) => `${convoy} ${e.n} (mean ${Math.round(e.length / e.n)}u)`)
+    .join(' · ');
+  log(`\n  HAULAGE  ${mix || 'nobody on the road'}`);
+
+  // Every connected deposit's own road home, and what it will bear. A long
+  // haul stuck on porters is the thing to look for.
+  const buckets = { porterShort: 0, porterLong: 0, carter: 0, caravan: 0 };
+  let stuck = 0;
+  for (const node of world.nodes) {
+    if (!node.isConnected) continue;
+    const route = world.routeTo(node);
+    if (!route) continue;
+    const weakest = route.weakestWear(world.traffic);
+    const convoy = convoyFor(weakest, route.length);
+    if (convoy === Convoy.Caravan) buckets.caravan++;
+    else if (convoy === Convoy.Carter) buckets.carter++;
+    else if (route.length >= CONVOY_CLASSES[Convoy.Carter].needsDistance) {
+      buckets.porterLong++;
+      // Long enough to want a cart, and the road will not take one.
+      if (weakest < CONVOY_CLASSES[Convoy.Carter].needsWear) stuck++;
+    } else buckets.porterShort++;
+  }
+  log(
+    `  routes home: porter(short) ${buckets.porterShort} · porter(long haul) ${buckets.porterLong} · carter ${buckets.carter} · caravan ${buckets.caravan}` +
+      `  — ${stuck} long hauls the road will not bear a cart on`,
+  );
+
+  const quantiles = (label: string, values: number[]): void => {
+    if (values.length === 0) return;
+    const v = [...values].sort((a, b) => a - b);
+    const at = (q: number) => v[Math.min(v.length - 1, Math.floor(q * v.length))];
+    log(
+      `  ${label}: p10 ${f2(at(0.1))} · median ${f2(at(0.5))} · p75 ${f2(at(0.75))} · p90 ${f2(at(0.9))} · max ${f2(v[v.length - 1])}`,
+    );
+  };
+
+  quantiles(
+    'edge wear (absolute)',
+    world.network.edges.map((e) => e.wear(world.traffic)),
+  );
+  // What actually decides a convoy: the worst stretch of the road a load has
+  // to travel. Quoted absolute so it can be read against WEAR_FULL (4.5, the
+  // point where soil stops changing) as well as against ROAD_DEVELOPED (18).
+  const weakest: number[] = [];
+  for (const node of world.nodes) {
+    if (!node.isConnected) continue;
+    const route = world.routeTo(node);
+    if (route) weakest.push(route.weakestWear(world.traffic));
+  }
+  quantiles('route weakest wear     ', weakest);
+}
+
+/**
+ * What each place has actually built, which since `construction.ts` is the
+ * whole of what its tier means. The columns to read together are `want` and
+ * `stock`: a place with a high appetite and nothing on the shelf is one the
+ * trade network is failing, and a place with material and no appetite has
+ * finished — those are different problems and the old report could not tell
+ * them apart, because neither number existed.
+ */
+function printBuilt(world: World): void {
+  // eslint-disable-next-line no-console
+  const log = console.log;
+  log('\n  BUILT              houses  cap   saw  msn  smy  joi   qual  want  stock  net/day');
+  for (const trader of world.traders) {
+    const works = (type: IndustryType): string => {
+      const industry = trader.industries.find((i) => i.type === type);
+      return industry ? `${Math.round(industry.built)}` : '0';
+    };
+    log(
+      `  ${trader.name.padEnd(17)} ${pad(f1(trader.dwellings), 6)} ${pad(Math.round(housingCapacity(trader)), 4)} ${pad(
+        works(IndustryType.Sawmill),
+        5,
+      )} ${pad(works(IndustryType.Masonry), 4)} ${pad(works(IndustryType.Smithy), 4)} ${pad(works(IndustryType.Joinery), 4)} ${pad(
+        f2(trader.fabricQuality),
+        6,
+      )} ${pad(f2(trader.buildAppetite), 5)} ${pad(f1(materialOnHand(trader)), 6)} ${pad(
+        f2(trader.fabricRate * 24),
+        8,
+      )}`,
+    );
+  }
+}
+
+/**
+ * Whether the labour market has actually settled into tradesmen — the point
+ * of `craft.ts`. Churn is invisible in every other column in this report: a
+ * realm whose people are reassigned weekly and one whose people stay put look
+ * identical in population, production and wealth until you notice the second
+ * one is quietly producing a third more for the same headcount.
+ */
+function printCrafts(world: World): void {
+  // eslint-disable-next-line no-console
+  const log = console.log;
+  const byCraft = new Map<string, { count: number; skill: number }>();
+  for (const villager of world.villagers) {
+    const key = villager.craft ?? 'none';
+    const entry = byCraft.get(key) ?? { count: 0, skill: 0 };
+    entry.count++;
+    entry.skill += villager.experience;
+    byCraft.set(key, entry);
+  }
+  const parts = [...byCraft.entries()]
+    .sort((a, b) => b[1].count - a[1].count)
+    .map(([craft, e]) => `${craft} ${e.count} (skill ${f2(e.skill / e.count)})`);
+  log(`\n  TRADES  ${parts.join(' · ')}`);
 }
 
 /**

@@ -10,9 +10,10 @@ import {
   sustainablePopulationAcross,
   type Trader,
 } from './economy';
-import { advanceDevelopment } from './development';
+import { advanceConstruction, realmDemand } from './construction';
+import { syncDevelopment } from './development';
 import { dist, type Vec2 } from './geometry';
-import { advanceHousing, housingCapacity } from './housing';
+import { housingCapacity } from './housing';
 import type { Industry } from './industry';
 import {
   hinterlandRadius,
@@ -24,15 +25,24 @@ import {
   type LandContext,
 } from './landUse';
 import { MIN_GROUND_QUALITY, ResourceNode } from './resourceNode';
-import { RoadNetwork, type Anchor, type RoadEdge, type Route, type Site } from './roadNetwork';
+import {
+  JUNCTION_GRAB_DISTANCE,
+  RoadNetwork,
+  type Anchor,
+  type RoadEdge,
+  type GraphNode,
+  type Route,
+  type RouteTree,
+  type Site,
+} from './roadNetwork';
 import { HOURS_PER_DAY } from './scale';
 import type { NodeSource, TerrainSource } from './source';
 import { NO_RIVERS, type RiverNetwork } from './river';
 import { TERRAIN_CHUNK_SIZE } from './terrain';
-import { dominantGood, TrafficField, WEAR_ON_BUILD, WEAR_PER_TRIP, wearEffort } from './traffic';
+import { dominantGood, TrafficField, WEAR_ON_BUILD, wearEffort, wearOfLoad } from './traffic';
 import { WorldGenerator } from './worldgen';
 import { CLAIM_RADIUS, Territory } from './territory';
-import { CLAIM_HORIZON, isSurveyed, ROAD_HORIZON, sampleAlong, TIER_HORIZON, type SurveySource } from './survey';
+import { CLAIM_HORIZON, isSurveyed, ROAD_HORIZON, sampleAlong, surveySource, TIER_HORIZON, type SurveySource } from './survey';
 import {
   capacityRatePerMin,
   FRONTIER_REACH,
@@ -56,9 +66,18 @@ import { Village } from './village';
 import { Villager } from './villager';
 import { WorkerDeliverySystem } from './workerDelivery';
 
-/** Seconds a drawn road takes to finish drawing itself in. */
-const ROAD_BUILD_TIME = 0.45;
-/** In-game hours per real second. */
+/**
+ * In-game hours a drawn road takes to finish drawing itself in. A flourish,
+ * not a construction time, so it is set to read as about a second of real
+ * time at 1x speed — see `REAL_SECONDS_PER_HOUR` in `scale.ts`.
+ */
+const ROAD_BUILD_TIME = 0.1;
+/**
+ * In-game hours per simulation second. One, and kept at one: simulation time
+ * is reckoned in hours throughout, and how fast the wall clock feeds it is
+ * decided in one place outside the model — `REAL_SECONDS_PER_HOUR`, applied
+ * in `GameScene`. Two clocks in two files is how a clock drifts.
+ */
 const HOURS_PER_SECOND = 1;
 /** Seconds between the village's population actually gaining or losing someone. */
 const POPULATION_STEP_INTERVAL = 9;
@@ -218,6 +237,13 @@ export class World {
 
   private events: WorldEvent[] = [];
   private routeCache = new Map<ResourceNode, Route | null>();
+  /**
+   * Every *other* route anyone has asked for this window, source by
+   * destination — see `routeBetweenSites`.
+   */
+  private pairRoutes = new Map<Site, Map<Site, Route | null>>();
+  /** One finished search per origin, which is what fills a row of it. */
+  private routeTrees = new Map<Site, RouteTree | null>();
   private cachedVersion = -1;
   private nextVillagerId = 1;
   private nextSettlementId = 1;
@@ -246,7 +272,7 @@ export class World {
     this.terrain = this.source.terrain;
     this.rivers = this.source.rivers ?? NO_RIVERS;
     this.traffic = new TrafficField(config.width, config.height);
-    this.network.setWearLookup((points) => this.traffic.wearAlong(points));
+    this.network.setTraffic(this.traffic);
 
     // Where the village is *asked* to stand is a coordinate; where it can
     // stand is a question about the ground, and only the world source can
@@ -556,13 +582,14 @@ export class World {
     // its own chunk sweep over ground the previous point had just covered.
     // One sample per horizon's-width is enough for the discs to overlap into
     // a continuous band.
-    for (const source of this.surveySources()) {
+    const sources = this.surveySources();
+    for (const source of sources) {
       for (const point of sampleAlong(source.path, source.horizon)) {
         this.generateAround(point, source.horizon + GENERATION_MARGIN, source.horizon);
       }
     }
 
-    this.surveyCountry();
+    this.surveyCountry(sources);
   }
 
   /**
@@ -587,7 +614,7 @@ export class World {
       if (node.isClaimed) sources.push({ path: [node.position], horizon: CLAIM_HORIZON });
     }
     for (const edge of this.network.edges) {
-      sources.push({ path: edge.points, horizon: ROAD_HORIZON });
+      sources.push(surveySource(edge.points, ROAD_HORIZON));
     }
 
     return sources;
@@ -598,8 +625,7 @@ export class World {
    * never cleared, so a road that later grows over leaves its discoveries
    * behind, which is exactly why a scouting track is worth drawing at all.
    */
-  private surveyCountry(): void {
-    const sources = this.surveySources();
+  private surveyCountry(sources: SurveySource[] = this.surveySources()): void {
     for (const node of this.nodes) {
       if (node.surveyed) continue;
       if (!isSurveyed(sources, node.position)) continue;
@@ -688,22 +714,68 @@ export class World {
     return this.routeCache.get(node) ?? null;
   }
 
-  /** The village or a visible node under a point, for hover and inspection. */
-  siteAt(point: Vec2, slack = 12): Site | null {
-    if (dist(this.village.position, point) <= this.village.radius + slack) return this.village;
+  /**
+   * The village or a visible node under a point, for hover and inspection.
+   *
+   * `grow` is how much bigger than its world size a place is currently being
+   * *drawn* — see `SettlementLayer`'s `markerScale`, which magnifies places
+   * once the map is pulled back far enough to be read rather than walked. The
+   * hit target has to follow the drawing, or a city shown as a fat dot would
+   * still only answer to the few world units it actually occupies, at exactly
+   * the zoom where pointing accurately is hardest.
+   */
+  siteAt(point: Vec2, slack = 12, grow: (site: Site) => number = () => 1): Site | null {
+    const reach = (site: Site, radius: number): boolean =>
+      dist(site.position, point) <= radius * grow(site) + slack;
 
-    const node = this.visibleNodes.find((n) => dist(n.position, point) <= n.radius + slack);
+    if (reach(this.village, this.village.radius)) return this.village;
+
+    const node = this.visibleNodes.find((n) => reach(n, n.radius));
     if (node) return node;
 
-    return this.settlements.find((s) => dist(s.position, point) <= s.radius + slack) ?? null;
+    return this.settlements.find((s) => reach(s, s.radius)) ?? null;
   }
 
   anchorAt(point: Vec2): Anchor | null {
     return this.network.anchorAt(point, this.connectableSites);
   }
 
+  /**
+   * The route between any two places, remembered for as long as the answer
+   * cannot have changed.
+   *
+   * `routeCache` has always done this for the one route the world asks for
+   * constantly — village to node — and this is the same bargain for all the
+   * others, invalidated by the same two events: the network changing shape,
+   * and the periodic re-pricing against wear (`WEAR_REFRESH_INTERVAL`).
+   *
+   * It is not an optimisation of a cheap thing. `findBestShipment` prices
+   * every source in the realm against every destination in the realm, and it
+   * is asked that up to eleven times a second; with a handful of villages
+   * standing that is tens of thousands of identical graph searches per tick,
+   * every one of them re-deriving a road network that had not moved. The
+   * dispatcher is *meant* to weigh everything against everything — that is the
+   * design, and it is the right one — but weighing is arithmetic, and only
+   * the routes underneath it were ever expensive.
+   */
   routeBetweenSites(from: Site, to: Site): Route | null {
-    return this.network.routeBetween(from, to);
+    this.refreshRoutes();
+
+    let fromHere = this.pairRoutes.get(from);
+    if (!fromHere) {
+      fromHere = new Map();
+      this.pairRoutes.set(from, fromHere);
+      // The first question asked about a place answers all of them: one search
+      // out of it settles every destination at once — see `RoadNetwork.routeTree`.
+      this.routeTrees.set(from, this.network.routeTree(from));
+    }
+
+    const known = fromHere.get(to);
+    if (known !== undefined) return known;
+
+    const route = this.routeTrees.get(from)?.to(to) ?? null;
+    fromHere.set(to, route);
+    return route;
   }
 
   /**
@@ -837,10 +909,32 @@ export class World {
     // raw goods into something worth clearly more is the whole reason a
     // smithy is worth running, so the wealth is earned right where that
     // value gets added, not later when someone happens to move the tools.
+    //
+    // **Value added**, not the output's whole price. This credited the full
+    // `BASE_VALUE` of what came out and nothing for what went in, which is not
+    // a margin, it is minting: a sawmill consumed two wood it was handed for
+    // free and booked the plank's entire 2.5. The error was invisible for as
+    // long as industries never actually ran (see `economy.ts`'s `SUBSISTENCE`
+    // for why they never did) and became the largest number in the economy the
+    // moment they did — wealth income went from 51 a minute to 516, and since
+    // Expansion Capacity is driven substantially by prosperity, the realm
+    // began claiming frontier sites roughly three times as fast on identical
+    // production.
+    //
+    // Charging the input also puts the recipes in the order the design says
+    // they should be in. A sawmill nets 0.5 a plank and a masonry 0.5 a block
+    // — worth doing, and worth doing mostly because of what the *planks* are
+    // for, not the coin. A smithy nets 4 a tool. "A smithy is meant to be the
+    // most profitable thing a settlement can run" was already written down in
+    // `BASE_VALUE`'s comment; it only became true here.
     for (const trader of this.traders) {
       for (const ind of trader.industries) {
         const produced = ind.produce(dt);
-        if (produced > 0) recordWealth(trader, BASE_VALUE[ind.resource] * produced);
+        if (produced <= 0) continue;
+        let inputValue = 0;
+        for (const { resource, per } of ind.recipe.inputs) inputValue += BASE_VALUE[resource] * per;
+        const margin = Math.max(0, BASE_VALUE[ind.resource] - inputValue);
+        recordWealth(trader, margin * produced);
       }
     }
 
@@ -889,7 +983,7 @@ export class World {
    */
   /** What the land system needs, and all it is allowed to touch. */
   private landContext(): LandContext {
-    return { terrain: this.terrain, registry: this.land };
+    return { terrain: this.terrain, registry: this.land, rivers: this.rivers };
   }
 
   /**
@@ -1004,6 +1098,35 @@ export class World {
   }
 
   /**
+   * The fork under this point, if there is one.
+   *
+   * A junction was the one thing on the map with real consequences that could
+   * not be inspected: it is what a settlement's `junction` term is read off
+   * (see `settlementSystem.ts`, where being a fork is worth more than being
+   * merely busy), and hovering one simply reported the ROAD panel for
+   * whichever of its arms happened to answer first. Given the design asks a
+   * player to grow towns by making crossroads, "what is this crossroads
+   * worth?" is a question the map ought to be able to answer.
+   *
+   * Slack matches the weld distance the network itself uses for junctions, so
+   * what the player can point at is exactly what the network treats as one
+   * fork.
+   */
+  junctionAt(point: Vec2): GraphNode | null {
+    let best: GraphNode | null = null;
+    let bestDistance = JUNCTION_GRAB_DISTANCE;
+    for (const node of this.network.nodes) {
+      if (!node.isJunction) continue;
+      const d = dist(node.position, point);
+      if (d <= bestDistance) {
+        best = node;
+        bestDistance = d;
+      }
+    }
+    return best;
+  }
+
+  /**
    * Take out the stretch of road under a point. A stretch runs between two
    * junctions or sites: there are no choices inside one, so half of it is
    * never worth keeping. The wear stays in the ground, so rebuilding along the
@@ -1024,12 +1147,12 @@ export class World {
    */
   private recordTrip(route: Route, resource: ResourceType | null, amount: number): void {
     for (const edge of route.edges) edge.usage++;
-    this.traffic.deposit(route.points, WEAR_PER_TRIP, resource, amount);
+    this.traffic.deposit(route.points, wearOfLoad(amount), resource, amount);
   }
 
   /** How packed down a road is, averaged along it. */
   wearOf(edge: RoadEdge): number {
-    return this.traffic.wearAlong(edge.points);
+    return edge.wear(this.traffic);
   }
 
   /**
@@ -1103,7 +1226,7 @@ export class World {
       villagers: this.villagers,
       traffic: this.traffic,
       routeTo: (node) => this.routeTo(node),
-      routeBetweenSites: (from, to) => this.network.routeBetween(from, to),
+      routeBetweenSites: (from, to) => this.routeBetweenSites(from, to),
       costAt: (point) => this.terrain.costAt(point) * wearEffort(this.traffic.wearAt(point)),
       recordTrip: (route, resource, amount) => this.recordTrip(route, resource, amount),
       emit: (event) => this.events.push(event),
@@ -1114,9 +1237,14 @@ export class World {
   private refreshRoutes(): void {
     if (this.cachedVersion === this.network.version) return;
     this.cachedVersion = this.network.version;
+    this.pairRoutes.clear();
+    this.routeTrees.clear();
+
+    // Two hundred-odd nodes, all asking the same question of the same place.
+    const fromVillage = this.network.routeTree(this.village);
 
     for (const node of this.nodes) {
-      const route = node.isClaimed ? this.network.routeBetween(this.village, node) : null;
+      const route = node.isClaimed ? (fromVillage?.to(node) ?? null) : null;
       this.routeCache.set(node, route);
       if (!node.isClaimed) continue;
 
@@ -1199,25 +1327,23 @@ export class World {
    * development's job, same as always.
    */
   private updatePopulation(dt: number): void {
+    // One reading of what the realm is short of worked goods, shared by every
+    // place deciding whether to build a workshop — see .
+    const demand = realmDemand(this.traders);
     for (const trader of this.traders) {
       decayThroughput(trader, dt);
       decayWealthIncome(trader, dt);
-      advanceDevelopment(trader, dt);
-      advanceHousing(trader, dt);
+      advanceConstruction(trader, demand, dt);
+      syncDevelopment(trader);
     }
 
     // Food decides how many people the civilisation *could* feed; housing
-    // decides how many it actually has room for. Capping the target by
-    // whichever is smaller is what makes a full village actually work on
-    // more housing instead of just piling up population nobody has
-    // anywhere to put — see `housing.ts`'s `advanceHousing`, which only
-    // spends wood once a place is genuinely at its own capacity.
-    // Food decides how many people the civilisation *could* feed; housing
     // decides how many it actually has room for, in aggregate — capping the
     // total by whichever is smaller is what makes a civilisation sitting at
-    // its housing ceiling actually work on more of it (see `advanceHousing`,
-    // which only spends wood once a place is genuinely at its own capacity)
-    // instead of just piling up population nobody has anywhere to put.
+    // its housing ceiling actually build more of it (see `construction.ts`,
+    // which spends genuine surplus material once a place is at its own
+    // capacity) instead of just piling up population nobody has anywhere to
+    // put.
     // This stays a civilisation-wide throttle, not a per-place hard block:
     // an earlier version also refused to let a worker *settle* at a specific
     // full place (keeping their old home instead), which sounded harmless

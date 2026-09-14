@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Via Lucrum — frame bench</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      #bench {
+        position: fixed; right: 12px; bottom: 12px; z-index: 99;
+        font: 12px/1.5 ui-monospace, monospace; white-space: pre;
+        background: rgba(250, 246, 236, 0.94); color: #3a3125;
+        border: 1px solid rgba(58, 49, 37, 0.3); padding: 10px 14px;
+        max-height: 78vh; overflow: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="game"></div>
+
+    <div id="hud" class="panel">
+      <div class="hud-title">VIA LUCRUM</div>
+      <div class="hud-day" id="hud-day">DAY 1</div>
+      <div class="timescale" id="timescale">
+        <button type="button" data-speed="1" class="active">1&times;</button>
+        <button type="button" data-speed="2">2&times;</button>
+        <button type="button" data-speed="5">5&times;</button>
+        <button type="button" data-speed="10">10&times;</button>
+      </div>
+    </div>
+
+    <div id="capacity" class="panel"></div>
+    <div id="inspect" class="panel hidden"></div>
+    <div id="debug" class="panel hidden"></div>
+    <div id="debug-legend"></div>
+
+    <pre id="bench">booting…</pre>
+
+    <script type="module" src="/tools/bench.ts"></script>
+  </body>
+</html>

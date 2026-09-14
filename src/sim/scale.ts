@@ -68,3 +68,29 @@ export const HOURS_PER_DAY = 24;
  * so the two are consistent.
  */
 export const DAYS_JOURNEY_METRES = 35_000;
+
+/**
+ * Real seconds one in-game hour takes at 1× speed — the one place the wall
+ * clock meets the simulation clock.
+ *
+ * For the life of the project this was 1, implicitly: `World.update` was fed
+ * the real frame delta and treated it as hours. That was survivable while
+ * distances were tuned by feel, and stopped being survivable the moment
+ * `WALK_SPEED` was corrected to a real day's journey (see `villager.ts`).
+ * A villager now covers 365 units an hour, so at one hour per second they
+ * crossed the whole of Kutná Hora's basin in a few seconds — the simulation
+ * was correct and completely unreadable.
+ *
+ * The fix is not to slow walking down again. Walking is right; the projector
+ * was running fast. Everything in the simulation is reckoned per in-game
+ * hour — production, consumption, wear, migration — so stretching the hour
+ * slows all of it together and changes no balance at all. The speed buttons
+ * then mean what they say: 10× puts the game back at the pace it used to run.
+ *
+ * Ten is a readability figure, not a physical one. At a working zoom a
+ * villager crosses the view in about a minute, which is the pace a person
+ * walking reads as. Making it literal — 4km/h against a 160km principality —
+ * would leave them visibly motionless. This is the number to turn if the
+ * game ever feels hurried or sluggish; nothing else needs to move with it.
+ */
+export const REAL_SECONDS_PER_HOUR = 10;

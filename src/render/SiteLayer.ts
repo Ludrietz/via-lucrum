@@ -16,6 +16,8 @@ interface NodeView {
   label: Phaser.GameObjects.Text;
   drawnState: NodeState | null;
   scale: number;
+  /** What the camera has to overlap for any of this to be worth drawing. */
+  bounds: Phaser.Geom.Rectangle;
 }
 
 /** Village and resource nodes: the readable layer on top of the terrain. */
@@ -26,8 +28,16 @@ export class SiteLayer {
   private readonly villageRing: Phaser.GameObjects.Graphics;
   private drawnTier: Tier | null = null;
   private villageScale = 1;
-  /** How much of `world.nodes` already has a view — the rest keeps growing as generation reaches further out. */
-  private seenNodeCount = 0;
+  /**
+   * Which nodes have been given a view. Deliberately not every node:
+   * generation decides a deposit long before anyone may work it, and a realm
+   * of sixty holdings sits on three hundred-odd decided deposits — so building
+   * one container, three graphics and a label for each of them stood up over a
+   * thousand display objects that existed only to be hidden on every frame for
+   * the rest of the game. A site earns its view when it is claimed. What an
+   * *unclaimed* site looks like is `FrontierLayer`'s business, and always was.
+   */
+  private readonly drawn = new Set<ResourceNode>();
 
   private hovered: Site | null = null;
 
@@ -52,8 +62,7 @@ export class SiteLayer {
     label.setLetterSpacing(3).setOrigin(0.5, 0).setAlpha(0.85);
     this.village.add(label);
 
-    for (const node of world.nodes) this.views.push(this.createNodeView(node));
-    this.seenNodeCount = world.nodes.length;
+    for (const node of world.nodes) if (node.isClaimed) this.views.push(this.createNodeView(node));
   }
 
   setHovered(site: Site | null): void {
@@ -61,12 +70,11 @@ export class SiteLayer {
   }
 
   update(dt: number): void {
-    // Generation keeps appending to `world.nodes` as the civilisation's
-    // reach grows (see `World.expandGeneration`) — nothing here ever
-    // removes from it, so picking up the tail each frame is enough to keep
-    // every newly generated node drawn.
-    for (; this.seenNodeCount < this.world.nodes.length; this.seenNodeCount++) {
-      this.views.push(this.createNodeView(this.world.nodes[this.seenNodeCount]));
+    // Generation keeps appending to `world.nodes` as the civilisation's reach
+    // grows (see `World.expandGeneration`) and nothing ever removes from it,
+    // so this only has to notice the ones that have since been claimed.
+    for (const node of this.world.nodes) {
+      if (node.isClaimed && !this.drawn.has(node)) this.views.push(this.createNodeView(node));
     }
 
     const k = 1 - Math.exp(-12 * dt);
@@ -81,12 +89,18 @@ export class SiteLayer {
     this.village.setScale(this.villageScale);
     this.villageRing.alpha += ((this.hovered === this.world.village ? 1 : 0) - this.villageRing.alpha) * k;
 
+    // A site's status ring and its stack of waiting goods are redrawn every
+    // frame, because the ring tracks live production — which is exactly the
+    // kind of per-frame `Graphics` rebuild this project has already been
+    // caught paying for off-screen once (see the water layer, vision.md).
+    const seen = this.scene.cameras.main.worldView;
+
     for (const view of this.views) {
       const { node } = view;
-      // Frontier offers are drawn by `FrontierLayer` instead, and look
-      // deliberately unlike anything owned — see that file.
-      view.container.setVisible(node.isClaimed);
-      if (!node.isClaimed) continue;
+
+      const onScreen = Phaser.Geom.Rectangle.Overlaps(seen, view.bounds);
+      view.container.setVisible(onScreen);
+      if (!onScreen) continue;
 
       if (view.drawnState !== node.state) {
         view.drawnState = node.state;
@@ -119,10 +133,10 @@ export class SiteLayer {
   // -------------------------------------------------------------------- nodes
 
   private createNodeView(node: ResourceNode): NodeView {
+    this.drawn.add(node);
     const container = this.scene.add
       .container(node.position.x, node.position.y)
-      .setDepth(DEPTH.sites)
-      .setVisible(false);
+      .setDepth(DEPTH.sites);
 
     const ring = this.scene.add.graphics();
     ring.lineStyle(2, COLORS.ink, 0.45);
@@ -144,7 +158,17 @@ export class SiteLayer {
     label.setLetterSpacing(2.5).setOrigin(0.5, 0).setAlpha(0.75);
     container.add(label);
 
-    return { node, container, body, status, ring, label, drawnState: null, scale: 1 };
+    // Generous: the glyph, its ring, and the goods stacked above it all sit
+    // outside the node's own radius.
+    const reach = node.radius + 48;
+    const bounds = new Phaser.Geom.Rectangle(
+      node.position.x - reach,
+      node.position.y - reach,
+      reach * 2,
+      reach * 2,
+    );
+
+    return { node, container, body, status, ring, label, drawnState: null, scale: 1, bounds };
   }
 
   private drawNode(view: NodeView): void {

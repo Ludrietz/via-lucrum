@@ -1,4 +1,5 @@
 import { dist, type Vec2 } from './geometry';
+import type { RiverNetwork } from './river';
 import type { TerrainSource } from './source';
 import { TerrainType, type TerrainSample } from './terrain';
 import { ResourceType } from './types';
@@ -80,10 +81,51 @@ export const TERRAIN_SUITABILITY: Record<TerrainType, number> = {
   [TerrainType.Forest]: 0.62,
   [TerrainType.Hills]: 0.34,
   [TerrainType.Mountains]: 0,
-  [TerrainType.Water]: 0,
+  /**
+   * Dear, not impossible.
+   *
+   * Water was flatly 0, and since `scoreCell` refuses anything scoring zero
+   * and growth spreads only from cells already held, that made a watercourse
+   * an absolute wall to a parcel: a village on a river could never hold a
+   * yard of its own far bank, however hemmed in it was and however narrow the
+   * stream. That is the same mistake roads made before they learned to bridge
+   * — treating "expensive" as "forbidden" — and it reads wrong for the same
+   * reason, because towns are built on rivers precisely *because* of the
+   * river.
+   *
+   * Low enough that dry ground is always taken first and a place only ever
+   * reaches over the water once it has genuinely run out of anything else,
+   * which is when wharves, staithes and a mill leat are what a town would
+   * actually build.
+   */
+  [TerrainType.Water]: 0.08,
 };
 
+/**
+ * How much of a cell's worth standing timber takes away from anyone who would
+ * have to fell it first.
+ *
+ * Clearing was free: `TERRAIN_SUITABILITY` gave forest a flat 0.62 whatever
+ * was standing on it, so a village sprawled into old woodland exactly as
+ * readily as into scrub, and — since that 0.62 is well above hills at 0.34 —
+ * preferred felling a wood to walking up a slope. Scaling by the density the
+ * terrain already carries makes the cost the real one: light cover is barely
+ * an obstacle, heavy timber is a season's work, and the difference is visible
+ * on the map before anybody takes it.
+ *
+ * A wood's own working is exempt, and that exemption is the point of having
+ * the rule at all. A forester expanding into trees is not clearing them, he
+ * is taking more of the wood into management — the trees are the asset. See
+ * `workedSuitability`.
+ */
+const CLEARING_COST = 0.55;
+
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
+
+/** What ground is worth to anyone who would have to fell what is standing on it first. */
+function clearingPenalty(sample: TerrainSample): number {
+  return 1 - CLEARING_COST * clamp01(sample.forestDensity);
+}
 
 /**
  * How good this ground is to live on and farm from. Open, dry, fertile and
@@ -97,7 +139,7 @@ export function settledSuitability(sample: TerrainSample): number {
   const dry = 1 - 0.5 * sample.wetness;
   const soil = 0.7 + 0.3 * sample.fertility;
   const clear = 1 - 0.35 * sample.rockiness;
-  return clamp01(base * dry * soil * clear);
+  return clamp01(base * dry * soil * clear * clearingPenalty(sample));
 }
 
 /**
@@ -116,24 +158,31 @@ export function workedSuitability(sample: TerrainSample, resource: ResourceType)
   switch (resource) {
     case ResourceType.Wood: {
       // Standing timber, and somewhere replanting would actually take.
+      //
+      // The one trade that pays no `clearingPenalty`, and the exemption is the
+      // reason the penalty is worth having: a forester expanding into trees is
+      // not felling a wood to make room, he is taking more of it into
+      // management. The denser the timber the *better* the ground — which is
+      // the exact opposite of what the same cell is worth to the village next
+      // door, and that disagreement is now a real contest over real cells.
       const slope = sample.type === TerrainType.Mountains ? 0.25 : 1;
       return clamp01(sample.forestDensity ** 0.8 * slope);
     }
     case ResourceType.Food: {
       const ground =
         sample.type === TerrainType.Plains ? 1 : sample.type === TerrainType.Forest ? 0.7 : sample.type === TerrainType.Hills ? 0.45 : 0;
-      return clamp01(sample.fertility * ground * (1 - 0.6 * sample.rockiness));
+      return clamp01(sample.fertility * ground * (1 - 0.6 * sample.rockiness) * clearingPenalty(sample));
     }
     case ResourceType.Stone: {
       const ground = sample.type === TerrainType.Mountains ? 1 : sample.type === TerrainType.Hills ? 0.9 : 0.5;
-      return clamp01((0.2 + 0.8 * sample.rockiness) * ground);
+      return clamp01((0.2 + 0.8 * sample.rockiness) * ground * clearingPenalty(sample));
     }
     case ResourceType.Iron: {
       // Ore follows the same stony, raised country stone does, but a seam is
       // narrower than a quarry face — the elevation term makes a mine's
       // workings reach uphill rather than spreading over the valley floor.
       const raised = clamp01(0.35 + sample.elevation);
-      return clamp01(sample.rockiness * raised);
+      return clamp01(sample.rockiness * raised * clearingPenalty(sample));
     }
     default:
       return 0;
@@ -145,6 +194,13 @@ export function workedSuitability(sample: TerrainSample, resource: ResourceType)
 export interface LandContext {
   terrain: TerrainSource;
   registry: LandRegistry;
+  /**
+   * The vector rivers, which the terrain raster knows nothing about: a river
+   * here is a line with a width, generally narrower than a cell, so every
+   * sample along one reads as ordinary dry ground. Without this a parcel laid
+   * its fields straight across a river as though it were not there.
+   */
+  rivers: RiverNetwork;
 }
 
 /**
@@ -416,10 +472,20 @@ export class LandParcel {
 
     const col = keyCol(key);
     const row = keyRow(key);
-    const suitability = this.suitabilityOf(ctx.terrain.sampleAtCell(col, row));
-    if (suitability <= 0) return null;
+    const raw = this.suitabilityOf(ctx.terrain.sampleAtCell(col, row));
+    if (raw <= 0) return null;
 
     const centre = ctx.terrain.cellCentre(col, row);
+    // Ground with a river through it is dear for the same reason open water
+    // is: a wharf or a mill leat is worth having and costs more to lay out
+    // than a dry close. A working pays the full price — a field cannot be
+    // ploughed and a seam cannot be dug through running water — while a
+    // settlement pays what open water costs, so a town may come to straddle
+    // its own river, but only once the dry ground either side is taken.
+    const river = ctx.rivers.isEmpty ? 0 : ctx.rivers.widthAt(centre, ctx.terrain.cellSize * 0.4);
+    const wet = river > 0 ? (this.kind === 'settled' ? TERRAIN_SUITABILITY[TerrainType.Water] : 0) : 1;
+    const suitability = raw * wet;
+    if (suitability <= 0) return null;
     const reach = Math.max(ctx.terrain.cellSize, this.wantedRadius) * 1.15;
     const pull = 1 / (1 + (dist(centre, this.origin) / reach) ** 3);
 

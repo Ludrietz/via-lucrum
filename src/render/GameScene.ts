@@ -2,7 +2,9 @@ import Phaser from 'phaser';
 import { RoadDrawing } from '../input/RoadDrawing';
 
 import type { ResourceNode } from '../sim/resourceNode';
-import type { RoadEdge, Site } from '../sim/roadNetwork';
+import type { GraphNode, RoadEdge, Site } from '../sim/roadNetwork';
+import { REAL_SECONDS_PER_HOUR } from '../sim/scale';
+import { Settlement } from '../sim/settlement';
 import { World, type WorldConfig } from '../sim/world';
 import { Hud } from '../ui/Hud';
 import { SpeedControl } from '../ui/SpeedControl';
@@ -14,7 +16,7 @@ import { InfluenceLayer } from './InfluenceLayer';
 import { LandUseLayer } from './LandUseLayer';
 import { RiverLayer } from './RiverLayer';
 import { RoadLayer } from './RoadLayer';
-import { SettlementLayer } from './SettlementLayer';
+import { markerScale, SettlementLayer } from './SettlementLayer';
 import { SettlementPotentialLayer } from './SettlementPotentialLayer';
 import { SiteLayer } from './SiteLayer';
 import { TerrainLayer } from './TerrainLayer';
@@ -49,6 +51,8 @@ export class GameScene extends Phaser.Scene {
   private selected: Site | null = null;
   /** Where on the network the cursor is, when it is over a road. */
   private hoveredRoadPoint: { x: number; y: number } | null = null;
+  /** The fork under the cursor, which reads differently from the roads that meet at it. */
+  private hoveredJunction: GraphNode | null = null;
 
   /**
    * The world is handed in already built, rather than constructed here.
@@ -106,11 +110,17 @@ export class GameScene extends Phaser.Scene {
   override update(_time: number, delta: number): void {
     const dt = delta / 1000;
 
+    // The wall clock becomes simulation time here and nowhere else: an
+    // in-game hour takes `REAL_SECONDS_PER_HOUR` real ones, which is what
+    // makes a villager legible as a person walking rather than a courier at
+    // a gallop. See `scale.ts` — it is the single knob the pace hangs on.
+    const step = dt / REAL_SECONDS_PER_HOUR;
+
     // Simulation speed runs the sim in extra steps of the same size rather
     // than a few huge ones, so every timer and cooldown inside it still sees
     // normal-sized ticks — nothing gets skipped, it just happens more often.
     // Rendering stays on the real frame delta, so motion never looks jumpy.
-    for (let i = 0; i < this.speedControl.speed; i++) this.world.update(dt);
+    for (let i = 0; i < this.speedControl.speed; i++) this.world.update(step);
     this.fx.handle(this.world.drainEvents());
 
     this.camera.update(dt);
@@ -122,10 +132,10 @@ export class GameScene extends Phaser.Scene {
     this.roads.update(dt);
     this.sites.update(dt);
     this.frontier.update(dt);
-    this.settlements.update(dt);
-    this.villagers.update(dt);
+    this.settlements.update(dt, this.cameras.main.zoom);
+    this.villagers.update();
     this.debug.update();
-    this.hud.update(this.hovered ?? this.selected, this.hoveredRoadPoint);
+    this.hud.update(this.hovered ?? this.selected, this.hoveredRoadPoint, this.hoveredJunction);
   }
 
   // ------------------------------------------------------------------ input
@@ -187,7 +197,13 @@ export class GameScene extends Phaser.Scene {
    * anything away from what was already there. See `World.placeAt`.
    */
   private focusAt(point: { x: number; y: number }): { site: Site | null; road: RoadEdge | null } {
-    const site = this.world.siteAt(point);
+    // Places are drawn larger than life once the map is pulled back far enough
+    // to be read rather than walked (see `SettlementLayer`), so what can be
+    // pointed at has to grow with them.
+    const zoom = this.cameras.main.zoom;
+    const site = this.world.siteAt(point, 12, (s) =>
+      s instanceof Settlement ? markerScale(s.tier, zoom) : 1,
+    );
     if (site) return { site, road: null };
 
     const road = this.world.roadAt(point);
@@ -201,6 +217,9 @@ export class GameScene extends Phaser.Scene {
 
     const focus = this.focusAt(point);
     this.hovered = focus.site;
+    // A fork is pointed at before the arms that meet there: it is the thing the
+    // player aimed at, and the one with something of its own to say.
+    this.hoveredJunction = focus.site ? null : this.world.junctionAt(point);
     this.sites.setHovered(this.hovered);
     this.frontier.setHovered(this.frontierAt(point));
     this.settlements.setHovered(this.hovered);

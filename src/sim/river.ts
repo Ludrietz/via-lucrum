@@ -100,6 +100,16 @@ function intersection(a: Vec2, b: Vec2, c: Vec2, d: Vec2): Vec2 | null {
   return { x: c.x + (d.x - c.x) * t, y: c.y + (d.y - c.y) * t };
 }
 
+/** How far a point lies from a segment — the usual clamped projection. */
+function pointSegmentDistance(p: Vec2, a: Vec2, b: Vec2): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSq));
+  return Math.hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t));
+}
+
 export class RiverNetwork {
   constructor(readonly rivers: readonly River[] = []) {}
 
@@ -119,6 +129,43 @@ export class RiverNetwork {
    */
   get drawsOwnWater(): boolean {
     return this.rivers.length > 0;
+  }
+
+  /**
+   * How wide the water is at a point, or 0 for dry ground.
+   *
+   * A river on this map is a *line* with a width, not wet cells in the terrain
+   * raster — which is the right way to model something narrower than a cell,
+   * and is why `terrain.isPassable` is dry along every river in the game. That
+   * was fine while the only thing that asked about rivers was the road rule,
+   * which consults this class directly (`canCross`). It stopped being fine the
+   * moment anything else wanted to know where the water was, and two things
+   * did, both quietly:
+   *
+   * - The road renderer decides which stretches are bridges by asking the
+   *   terrain whether the ground is passable. Along a river it always is, so
+   *   **no bridge was ever drawn over a river** — roads crossed them as if
+   *   they were not there, which is exactly the reading the bridge mechanic
+   *   exists to correct.
+   * - Land parcels score cells off the terrain sample alone, so a village's
+   *   fields and a wood's cutting ground spread across a river without paying
+   *   it the slightest attention.
+   *
+   * Both are the same bug: two kinds of water, and only one of them answers
+   * when asked. This is the answer for the other kind.
+   */
+  widthAt(point: Vec2, slack = 0): number {
+    let widest = 0;
+    for (const river of this.rivers) {
+      for (let i = 0; i + 1 < river.points.length; i++) {
+        const width = Math.min(river.widths[i], river.widths[i + 1]);
+        const reach = width / 2 + slack;
+        if (pointSegmentDistance(point, river.points[i], river.points[i + 1]) <= reach) {
+          widest = Math.max(widest, width);
+        }
+      }
+    }
+    return widest;
   }
 
   /**

@@ -1,5 +1,5 @@
 import {
-  destinationsFor,
+  bestDestinationFor,
   effectiveStock,
   exportableAmount,
   routeScore,
@@ -14,7 +14,7 @@ import type { ResourceNode } from './resourceNode';
 import type { Route } from './roadNetwork';
 import { TRACKED_GOODS, type TrafficField } from './traffic';
 import { ResourceType } from './types';
-import { CARRY_CAPACITY } from './villager';
+import { CONVOY_CLASSES, convoyFor, type Convoy } from './villager';
 
 /**
  * A settlement's surplus has to clear this bar before it is worth a
@@ -71,6 +71,16 @@ export interface Shipment {
   resource: ResourceType;
   amount: number;
   pickupRoute: Route;
+  /** What this load travels as — see `convoyFor`. */
+  convoy: Convoy;
+}
+
+/** A node waiting on materials, and everything about that no source can change. */
+interface InvestmentCandidate {
+  node: ResourceNode;
+  unmet: number;
+  progress: number;
+  heldBack: number;
 }
 
 export interface ShipmentQuery {
@@ -121,27 +131,66 @@ export function findBestShipment(query: ShipmentQuery): Shipment | null {
     relevance.set(resource, Math.max(...query.traders.map((t) => shortage(t, resource))));
   }
 
+  // Which nodes are waiting on a delivery to level up, and everything about
+  // how badly they want it that does not depend on where the load would come
+  // from — which turns out to be all of it but the route.
+  //
+  // This was derived inside `consider`, so every deposit in the realm was
+  // re-examined once per candidate source, and `investmentProgress` and
+  // `levelsHeldBackByInvestment` recomputed with it: a few hundred sources
+  // against a few hundred nodes, eleven times a second. It depends on the
+  // nodes alone. Grouping by what each is waiting for also means a source
+  // only ever looks at the nodes that could actually want what it is
+  // carrying. Built in `query.nodes` order, so ties still fall to whichever
+  // node comes first, exactly as before.
+  const investing = new Map<ResourceType, InvestmentCandidate[]>();
+  for (const node of query.nodes) {
+    if (!node.isConnected || node.requiredResource === null) continue;
+
+    const shortfall = investmentShortage(node);
+    if (shortfall <= 0) continue;
+
+    const next = node.investmentProgress.next ?? 0;
+    const candidate: InvestmentCandidate = {
+      node,
+      unmet: Math.max(1, Math.ceil(next - node.effectiveInvestment)),
+      progress: 1 - shortfall,
+      heldBack: levelsHeldBackByInvestment(node.cumulativeCollected, node.investedResource),
+    };
+
+    const bucket = investing.get(node.requiredResource);
+    if (bucket) bucket.push(candidate);
+    else investing.set(node.requiredResource, [candidate]);
+  }
+
+  const pickupRoutes = new Map<TradeSource, Route | null>();
+
   const consider = (source: TradeSource, resource: ResourceType, available: number, urgency: number): void => {
     if (available <= 0) return;
 
-    const pickupRoute = query.pickupRouteTo(source);
+    // A trader source is considered once per good it might export, and where
+    // the nearest free pair of hands is does not change between those.
+    let pickupRoute = pickupRoutes.get(source);
+    if (pickupRoute === undefined) {
+      pickupRoute = query.pickupRouteTo(source);
+      pickupRoutes.set(source, pickupRoute);
+    }
     if (!pickupRoute) return;
 
-    let winner: { destination: Destination; score: number; unmet: number } | null = null;
+    let winner: { destination: Destination; score: number; unmet: number; route: Route } | null = null;
     let traderNeedsIt = false;
 
     const traderCandidates = query.traders.filter((t) => t !== source);
-    const traderOptions = destinationsFor(
+    const top = bestDestinationFor(
       resource,
       traderCandidates,
       (trader) => query.routeBetween(source, trader),
       query.traffic,
     );
-    if (traderOptions.length > 0) {
-      const top = traderOptions[0];
+    if (top !== null) {
       const target = targetStock(top.trader, resource);
       const unmet = Math.max(1, Math.ceil(target - effectiveStock(top.trader, resource)));
-      winner = { destination: top.trader, score: top.score, unmet };
+      winner = { destination: top.trader, score: top.score, unmet, route: top.route };
       traderNeedsIt = shortage(top.trader, resource) > TRADER_COMFORTABLE;
     }
 
@@ -164,14 +213,11 @@ export function findBestShipment(query: ShipmentQuery): Shipment | null {
       // "does anyone actually eat today" rather than just behind whichever
       // trader happens to want this resource most right now.
       const investmentPenalty = (traderNeedsIt ? 0.5 : 1) * (1 - foodFamine * 0.9);
-      for (const node of query.nodes) {
-        if (node === source || !node.isConnected || node.requiredResource !== resource) continue;
+      for (const candidate of investing.get(resource) ?? []) {
+        const node = candidate.node;
+        if (node === source) continue;
 
-        const shortfall = investmentShortage(node);
-        if (shortfall <= 0) continue;
-
-        const next = node.investmentProgress.next ?? 0;
-        const unmet = Math.max(1, Math.ceil(next - node.effectiveInvestment));
+        const unmet = candidate.unmet;
 
         const route = query.routeBetween(source, node);
         if (!route) continue;
@@ -186,7 +232,7 @@ export function findBestShipment(query: ShipmentQuery): Shipment | null {
         // start them. Keep the baseline high enough that a fresh node is
         // still a competitive pick, and let progress only nudge the choice
         // between otherwise-similar candidates.
-        const progress = 1 - shortfall;
+        const progress = candidate.progress;
         // Also discounted, not gated, when nobody's actually short of what
         // this node makes: a hard "skip entirely" here was tried and
         // reverted — once ordinary demand was reliably kept satisfied (the
@@ -206,7 +252,7 @@ export function findBestShipment(query: ShipmentQuery): Shipment | null {
         // node's output is comfortable almost all the time, so almost every
         // node was permanently cut to a sixth and investment never happened
         // anywhere.
-        const heldBack = levelsHeldBackByInvestment(node.cumulativeCollected, node.investedResource);
+        const heldBack = candidate.heldBack;
         const relevancePenalty =
           (relevance.get(node.resource) ?? 0) > 0 ? 1 : Math.min(1, 0.15 + heldBack * 0.4);
         // How badly this site is being held back by logistics rather than by
@@ -227,7 +273,7 @@ export function findBestShipment(query: ShipmentQuery): Shipment | null {
         const score =
           (0.6 + 0.5 * progress) * starvation * routeScore(route, query.traffic) * investmentPenalty * relevancePenalty;
         if (winner && winner.score >= score) continue;
-        winner = { destination: node, score, unmet };
+        winner = { destination: node, score, unmet, route };
       }
     }
 
@@ -236,11 +282,21 @@ export function findBestShipment(query: ShipmentQuery): Shipment | null {
     const score = urgency - pickupRoute.resistance / 50 + winner.score * 60;
     if (score <= bestScore) return;
 
-    const amount = Math.min(CARRY_CAPACITY, available, winner.unmet);
+    // What can be moved in one trip is the road's answer, not the person's.
+    // The route the *goods* travel decides it — not the empty walk out to the
+    // pickup, which may well come from somewhere else entirely.
+    // What the road will bear, then what there actually is to put on it. The
+    // heaviest class the road allows sets the ceiling on the load; the load
+    // then decides what is actually harnessed up, so nobody walks a waggon
+    // train out for four sacks.
+    const weakest = winner.route.weakestWear(query.traffic);
+    const allowed = convoyFor(weakest, winner.route.length);
+    const amount = Math.min(CONVOY_CLASSES[allowed].capacity, available, winner.unmet);
+    const convoy = convoyFor(weakest, winner.route.length, amount);
     if (amount <= 0) return;
 
     bestScore = score;
-    best = { source, destination: winner.destination, resource, amount, pickupRoute };
+    best = { source, destination: winner.destination, resource, amount, pickupRoute, convoy };
   };
 
   // Production: a node with a backlog is urgent in proportion to how full it

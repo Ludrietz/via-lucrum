@@ -392,6 +392,31 @@ export class Surveyor {
     return base + worst * worst * SCARCITY_WEIGHT;
   }
 
+  /*
+   * Appetite is a *weight*, and only a weight. It used to also be an absolute
+   * gate — a measured player refused to connect any site scoring under 0.5 —
+   * and that gate quietly decided the outcome of every experiment run through
+   * this harness, in the worst possible direction: it made the stand-in
+   * player **stop playing when the economy was going well**.
+   *
+   * The bases are 0.2 for stone and iron, so a comfortable ore deposit scored
+   * 0.2 + worst² × 2.5 and needed a realm-wide shortage of 0.35 just to be
+   * considered. Any change that genuinely improved supply therefore pushed
+   * shortages down, which switched off expansion, which looked in the report
+   * exactly like the change had broken the game. Measured directly: the same
+   * seed and the same days, with a change that lowered iron shortage from
+   * 1.00 to 0.22, went from seventy-three connected deposits to
+   * twenty-two — with two thousand Expansion Capacity banked and nothing
+   * bought. The simulation was fine; the player had walked away.
+   *
+   * A harness whose stand-in player rewards scarcity is worse than no harness,
+   * because its bias points the same way every time and it is invisible in the
+   * columns. Appetite still steers *which* site is worth connecting next,
+   * through the score below, and `strained` still catches genuine
+   * over-extension — that one is a real judgement about the network, not about
+   * whether the larder happens to be full this week.
+   */
+
   private drawOneRoad(world: World): boolean {
     const targets = world.claimedNodes.filter((n) => !n.isConnected && !this.refused.has(n.id));
     const sources = this.networkSources(world);
@@ -414,7 +439,6 @@ export class Surveyor {
       }
 
       const appetite = this.appetite(world, node.resource);
-      if (this.options.policy === 'measured' && appetite < 0.5) continue;
       // Already carrying everything it can: another site to service would
       // make the shortages worse, not better. This is the judgement a player
       // makes by looking at the map and seeing more road than traffic.

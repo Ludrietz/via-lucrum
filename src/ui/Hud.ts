@@ -10,15 +10,16 @@ import {
 } from '../sim/economy';
 import { developmentRate } from '../sim/development';
 import type { Vec2 } from '../sim/geometry';
-import { hasRoomToBuild, housingCapacity, nextHousingThreshold } from '../sim/housing';
+import { materialOnHand, totalWorks } from '../sim/construction';
+import { hasRoomToBuild, housingCapacity } from '../sim/housing';
 import { urbanityLabel } from '../sim/landUse';
 import type { ResourceNode } from '../sim/resourceNode';
-import type { Site } from '../sim/roadNetwork';
+import type { GraphNode, Site } from '../sim/roadNetwork';
 import { METRES_PER_UNIT } from '../sim/scale';
 import { Settlement } from '../sim/settlement';
 import { TERRAIN_LABELS } from '../sim/terrain';
 import { TIER_LABELS, TIER_THRESHOLDS } from '../sim/tier';
-import { dominantGood, TRACKED_GOODS, WEAR_FULL } from '../sim/traffic';
+import { dominantGood, ROAD_DEVELOPED, TRACKED_GOODS } from '../sim/traffic';
 import { NodeState, ResourceType, SiteType, VillagerRole } from '../sim/types';
 import { Village } from '../sim/village';
 import type { World } from '../sim/world';
@@ -40,6 +41,8 @@ const RESOURCE_ORDER = [
   ResourceType.Planks,
   ResourceType.StoneBlocks,
   ResourceType.Tools,
+  ResourceType.Bread,
+  ResourceType.Fittings,
 ];
 
 /** Plain DOM HUD. Reads the world, never writes to it. */
@@ -66,7 +69,7 @@ export class Hud {
     });
   }
 
-  update(focused: Site | null, roadPoint: Vec2 | null): void {
+  update(focused: Site | null, roadPoint: Vec2 | null, junction: GraphNode | null = null): void {
     this.day.textContent = `DAY ${this.world.day}`;
 
     if (!this.hintFaded && this.world.network.edges.length > 0) {
@@ -75,7 +78,7 @@ export class Hud {
     }
 
     this.renderCapacity();
-    this.renderInspect(focused, roadPoint);
+    this.renderInspect(focused, roadPoint, junction);
   }
 
   /**
@@ -115,13 +118,14 @@ export class Hud {
     return `<div class="cap-row"><span>${label}</span><span>+${value.toFixed(1)}</span></div>`;
   }
 
-  private renderInspect(site: Site | null, roadPoint: Vec2 | null): void {
+  private renderInspect(site: Site | null, roadPoint: Vec2 | null, junction: GraphNode | null): void {
     let html: string | null = null;
 
     if (site instanceof Village) html = this.villagePanel(site);
     else if (site instanceof Settlement) html = this.settlementPanel(site);
     else if (site && (site as ResourceNode).state === NodeState.Frontier) html = this.frontierPanel(site as ResourceNode);
     else if (site) html = this.nodePanel(site as ResourceNode);
+    else if (junction) html = this.junctionPanel(junction);
     else if (roadPoint) html = this.roadPanel(roadPoint);
 
     if (!html) {
@@ -154,7 +158,14 @@ export class Hud {
   /** Every industry a trader runs, staffed or not — an empty one just reads as inert. */
   private industriesPanel(trader: Trader): string {
     const rows = trader.industries
-      .map((ind) => this.row(INDUSTRY_LABELS[ind.type], `${ind.workers.length} / ${ind.workerCapacity}`))
+      .map((ind) =>
+        this.row(
+          INDUSTRY_LABELS[ind.type],
+          ind.exists
+            ? `${ind.workers.length} / ${ind.workerCapacity}`
+            : '<span class="note-inline">not built</span>',
+        ),
+      )
       .join('');
     return `<div class="note">INDUSTRIES</div><div class="stats">${rows}</div>`;
   }
@@ -162,10 +173,44 @@ export class Hud {
   /** How many residents this place has room for right now, and whether it's crowded enough to be working on more. */
   private housingRow(trader: Trader): string {
     const capacity = housingCapacity(trader);
-    const maxed = nextHousingThreshold(trader) === null;
-    const crowded = !maxed && trader.population >= capacity * 0.8;
-    const note = crowded ? 'building more room' : maxed ? 'fully grown' : 'room to spare';
-    return this.row('Housing', `${capacity} <span class="note-inline">${note}</span>`);
+    const crowded = trader.population >= capacity * 0.8;
+    const note = crowded ? 'building more room' : 'room to spare';
+    return this.row('Housing', `${Math.floor(capacity)} <span class="note-inline">${note}</span>`);
+  }
+
+  /**
+   * What this place has built, what it was built out of, and whether it is
+   * currently going up or falling down.
+   *
+   * This is the panel that makes the whole processed economy legible. Before
+   * it, a player watching planks arrive had no way to see what became of them
+   * — the goods vanished into a per-capita appetite and reappeared, much
+   * later and much transformed, as a tier label. `Built in` is the reward for
+   * running a sawmill stated in one line: a place built of plank and dressed
+   * stone is grander for the same acreage and needs mending half as often.
+   */
+  private builtPanel(trader: Trader): string {
+    const standing = trader.dwellings + totalWorks(trader);
+    const rate = trader.fabricRate * 24;
+    const trend = rate > 0.2 ? 'BUILDING' : rate < -0.2 ? 'FALLING DOWN' : 'HOLDING';
+    const material = materialOnHand(trader);
+    const quality =
+      trader.fabricQuality >= 0.66
+        ? 'dressed stone &amp; sawn plank'
+        : trader.fabricQuality >= 0.33
+          ? 'part worked, part rough'
+          : 'log and rubble';
+    const wanting =
+      trader.buildAppetite > 0.05 && material < 1
+        ? ' <span class="need">wants material</span>'
+        : '';
+
+    return `<div class="note">BUILT</div><div class="stats">
+      ${this.row('Standing', `${Math.round(standing)} <span class="note-inline">${trend} ${rate >= 0 ? '+' : ''}${rate.toFixed(1)}/day</span>`)}
+      ${this.row('Built in', `<span class="note-inline">${quality}</span>`)}
+      ${this.row('Materials', `${Math.round(material)}${wanting}`)}
+      ${this.bar('Wants to build', trader.buildAppetite, true)}
+    </div>`;
   }
 
   /**
@@ -225,6 +270,8 @@ export class Hud {
       ${this.wealthPanel(village)}
       <div class="stats">${this.bar('Economy', economicActivity(village), true)}</div>
       <div class="divider"></div>
+      ${this.builtPanel(village)}
+      <div class="divider"></div>
       ${this.industriesPanel(village)}
       <div class="divider"></div>
       ${this.traderStats(village)}
@@ -232,8 +279,10 @@ export class Hud {
   }
 
   /**
-   * The tier bar: how close this place is to its next rung, and whether its
-   * wood-and-stone supply is currently pulling it up or letting it slide.
+   * The tier bar: how close this place is to its next rung. Development is
+   * standing built fabric now (see `development.ts`), so this bar and the
+   * BUILT panel above are two readings of one fact — which is the point. A
+   * place climbs because it put something up, and the panel says what.
    */
   private developmentPanel(trader: Trader): string {
     const tierIndex = TIER_THRESHOLDS.findIndex((step) => step.tier === trader.tier);
@@ -241,12 +290,12 @@ export class Hud {
     const next = TIER_THRESHOLDS[tierIndex - 1] ?? null;
 
     const progress = next ? (trader.development - current) / (next.threshold - current) : 1;
-    const rate = developmentRate(trader);
-    const trend = rate > 0.05 ? 'RISING' : rate < -0.05 ? 'FALLING' : 'STEADY';
+    const rate = developmentRate(trader) * 24;
+    const trend = rate > 0.2 ? 'RISING' : rate < -0.2 ? 'FALLING' : 'STEADY';
 
     return `<div class="stats">
       ${this.bar('Development', progress, true)}
-      ${this.row('Trend', `${trend} <span class="note-inline">${rate >= 0 ? '+' : ''}${rate.toFixed(2)}/s</span>`)}
+      ${this.row('Trend', `${trend} <span class="note-inline">${rate >= 0 ? '+' : ''}${rate.toFixed(1)}/day</span>`)}
     </div>`;
   }
 
@@ -423,6 +472,61 @@ export class Hud {
    * The panel this whole version turns on: what is moving through this spot,
    * how good the road is, and how close it is to becoming somewhere.
    */
+  /**
+   * A fork in the road, which is a different thing from the roads that meet
+   * at it and was the one feature on the map with real consequences that
+   * could not be inspected.
+   *
+   * Being a junction is worth more to a prospective settlement than being
+   * merely busy is (`settlementSystem.ts` weighs `junction` at 0.17 against
+   * traffic's 0.30, and the last step from hamlet to settlement needs the
+   * junction term to clear it at all) — so "a place becomes a town by
+   * becoming a hub" is a rule the design leans on and the map never showed.
+   * Hovering one used to report whichever of its arms answered first.
+   */
+  private junctionPanel(node: GraphNode): string {
+    const point = node.position;
+    const goods = this.world.traffic.goodsAt(point);
+    const { total } = dominantGood(goods);
+    const wear = this.world.traffic.wearAt(point);
+    const potential = this.world.potentialAt(point);
+    const degree = node.edges.length;
+
+    const arms = node.edges
+      .slice()
+      .sort((a, b) => b.wear(this.world.traffic) - a.wear(this.world.traffic))
+      .map((edge) =>
+        this.row(
+          roadTierName(edge.wear(this.world.traffic)),
+          `${Math.round(edge.length * METRES_PER_UNIT)} m <span class="note-inline">${edge.usage} trips</span>`,
+        ),
+      )
+      .join('');
+
+    const bars = TRACKED_GOODS.filter((r) => goods[r] > 0.05)
+      .sort((a, b) => goods[b] - goods[a])
+      .slice(0, 4)
+      .map((r) => this.bar(RESOURCE_LABELS[r], goods[r] / Math.max(total, 1)))
+      .join('');
+
+    return `
+      <div class="name">${degree >= 4 ? 'CROSSROADS' : degree === 3 ? 'FORK' : 'BEND'}</div>
+      <div class="meta">${degree} ROADS MEET &middot; ${TERRAIN_LABELS[this.world.terrain.typeAt(point)]}</div>
+      <div class="stats">
+        ${this.bar('Traffic', Math.min(1, wear / ROAD_DEVELOPED))}
+        ${bars || '<div class="note">Nothing has been carried past here yet.</div>'}
+      </div>
+      <div class="divider"></div>
+      <div class="note">ROADS MEETING HERE</div>
+      <div class="stats">${arms}</div>
+      <div class="divider"></div>
+      <div class="stats">
+        ${this.bar('Settlement', potential, true)}
+        ${this.row('Likely', potential > 0.04 ? this.world.likelyTradeAt(point) : '&mdash;')}
+      </div>
+      ${this.reasons(point)}`;
+  }
+
   private roadPanel(point: Vec2): string {
     const goods = this.world.traffic.goodsAt(point);
     const { resource, share, total } = dominantGood(goods);
@@ -438,7 +542,7 @@ export class Hud {
       <div class="name">ROAD</div>
       <div class="meta">${roadTierName(wear)} &middot; ${TERRAIN_LABELS[this.world.terrain.typeAt(point)]}</div>
       <div class="stats">
-        ${this.bar('Traffic', Math.min(1, wear / WEAR_FULL))}
+        ${this.bar('Traffic', Math.min(1, wear / ROAD_DEVELOPED))}
         ${bars || '<div class="note">Nothing has been carried past here yet.</div>'}
       </div>
       <div class="divider"></div>
@@ -514,6 +618,8 @@ export class Hud {
         ${this.bar('Economy', economicActivity(settlement), true)}
         ${this.bar('Standing', settlement.potential, true)}
       </div>
+      <div class="divider"></div>
+      ${this.builtPanel(settlement)}
       <div class="divider"></div>
       ${this.industriesPanel(settlement)}
       <div class="divider"></div>

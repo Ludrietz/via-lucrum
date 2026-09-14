@@ -19,6 +19,24 @@ export type TradeSource = ResourceNode | Trader;
 export type Destination = Trader | ResourceNode;
 
 /**
+ * How many measures of grain one loaf is worth at table.
+ *
+ * Two grain and the fuel to fire the oven make one loaf, and the loaf feeds
+ * three — so baking returns half again as much eating as the grain went in
+ * with. Exactly the shape the timber chain already has (two wood make a plank
+ * worth three wood of building), and deliberately so: this is the answer to
+ * "what is a granary full of grain for", and the answer has to be the same
+ * kind of answer as "what is a wood full of timber for".
+ *
+ * It buys a second thing, which for a game about roads may matter more. Grain
+ * is *bulky*: feeding a town of sixty in grain is three times the cart-loads
+ * of feeding it in bread. A realm that bakes near its farms and ships loaves
+ * spends a third of the hauling on the same number of people fed, and gets
+ * those hands back for something else.
+ */
+export const BREAD_NOURISHMENT = 3;
+
+/**
  * What one resident gets through in a minute. **The** per-capita number:
  * demand, the stock a place wants to keep, how many people a food supply can
  * feed, and what actually comes off the shelf are all read from this one
@@ -43,7 +61,10 @@ export type Destination = Trader | ResourceNode;
  */
 export const DEMAND_PER_CAPITA_PER_MIN: Record<ResourceType, number> = {
   [ResourceType.Food]: 0.5,
-  [ResourceType.Wood]: 0.3,
+  // Firewood, and only firewood — see `SUBSISTENCE` below for why this is no
+  // longer also the timber a place builds with, and why it dropped when that
+  // half moved out.
+  [ResourceType.Wood]: 0.2,
   [ResourceType.Iron]: 0.1,
   [ResourceType.Stone]: 0.1,
   // Close to parity with the raw goods on purpose: a settlement's need for
@@ -57,6 +78,14 @@ export const DEMAND_PER_CAPITA_PER_MIN: Record<ResourceType, number> = {
   [ResourceType.Planks]: 0.25,
   [ResourceType.StoneBlocks]: 0.25,
   [ResourceType.Tools]: 0.12,
+  // Dearer per head than either plain building material, because a place
+  // only ever wants a little of it and every unit is worth ten of rough
+  // timber on the wall — see `construction.ts`'s MATERIALS.
+  [ResourceType.Fittings]: 0.1,
+  // In loaves, not in grain: one loaf is three measures' worth of eating
+  // (see `BREAD_NOURISHMENT`), so a place that wants four minutes of food on
+  // hand wants a third as many loaves as it would sacks.
+  [ResourceType.Bread]: 0.5 / BREAD_NOURISHMENT,
 };
 
 /** The same figure per second, which is the rate `consume` actually applies. */
@@ -64,11 +93,110 @@ export const CONSUMPTION_PER_CAPITA: Record<ResourceType, number> = Object.fromE
   Object.entries(DEMAND_PER_CAPITA_PER_MIN).map(([resource, perMin]) => [resource, perMin / 60]),
 ) as Record<ResourceType, number>;
 
+/**
+ * What people genuinely get through simply by being alive: they eat, and they
+ * burn firewood. Nothing else on the table is metabolised.
+ *
+ * Everything else — stone, iron, and every worked good — is drawn by
+ * `construction.ts` instead, when and only when something is actually being
+ * built out of it. This is the single change that made a processing economy
+ * possible at all, and the diagnosis is worth keeping because it was invisible
+ * for a long time behind a system that looked correct.
+ *
+ * Every raw good used to be a per-capita metabolic sink, at a rate scaling
+ * with population, while the stock a place *wants* on hand (`targetStock`)
+ * scales with population too. So a place's shelf converged to its buffer and
+ * stayed there, by construction, forever — and an industry may only work
+ * material above `WORKING_RESERVE` of that same buffer. Measured on seed 1234
+ * at day 61 with a hundred residents: one plank existed in the entire realm,
+ * no blocks, no tools, and the tools shortage had read 1.00 without
+ * interruption since the first tick. The industry gates were not too strict;
+ * there was structurally never anything spare to put through them, because
+ * the population ate the whole supply of every raw good no matter how large
+ * the supply got.
+ *
+ * A villager chewing on a block of limestone was never believable anyway. Now
+ * stone piles up at a place with a quarry and no work for it, which is
+ * exactly the condition under which someone should start dressing it.
+ */
+export const SUBSISTENCE: readonly ResourceType[] = [ResourceType.Food, ResourceType.Wood, ResourceType.Bread];
+
+
+/**
+ * Goods a place wants because it is *building* something — see
+ * `construction.ts`. Wood appears on both lists, and honestly: a village
+ * burns it and builds with it, and the two appetites are genuinely different
+ * things that happen to want the same stuff.
+ *
+ * What a place on this list wants scales with how much building it actually
+ * has in front of it, not with its headcount alone. That is the difference
+ * between a market and a warehouse. With a flat per-capita target, the
+ * largest place in the realm wanted the largest stack of planks *because it
+ * was largest* — so a finished capital sat on ninety-six planks it had no
+ * use for, below its own export line and therefore invisible to trade, while
+ * five hamlets that were actually trying to build held none and could not
+ * outbid it. Measured on seed 1234, day 61, the first run after industries
+ * started working at all.
+ *
+ * Tying the target to the appetite makes the same pile read as what it is:
+ * surplus, at a place that has finished building, worth carrying to somebody
+ * who hasn't. Nothing had to be added to the trade system — it was already
+ * asking the right question, it was just being told the wrong answer.
+ */
+export const CONSTRUCTION_GOODS: readonly ResourceType[] = [
+  ResourceType.Wood,
+  ResourceType.Stone,
+  ResourceType.Planks,
+  ResourceType.StoneBlocks,
+  ResourceType.Tools,
+  ResourceType.Fittings,
+  // Nobody builds a wall out of iron. It is here because everything it is
+  // *for* is on this list: iron becomes tools, and tools are consumed by
+  // building and make the building go faster. A place that has stopped
+  // building has no more use for iron than for the tools it would become.
+  //
+  // Leaving it off was quietly fatal to the entire smithy chain, in a way
+  // worth recording because the mechanism is not obvious. On the flat
+  // per-capita reading a place of seventy wanted twenty-eight iron on the
+  // shelf, and a smithy may only work what is spare above `WORKING_RESERVE`
+  // of that — seventeen. The realm's two iron deposits could not deliver
+  // seventeen units to one place, so the surplus was never reached, so no
+  // smithy was ever built, so no tool was ever made, anywhere, on any seed.
+  // Scaled by appetite the same target falls to the `MIN_TARGET_STOCK` floor
+  // of eight — and eight iron on a shelf *is* three spare, which is a smithy.
+  // The floor is doing real work here: it is what lets a chain bootstrap at
+  // all, since a place with no smithy has no appetite that would ever call
+  // for the iron that would justify one.
+  ResourceType.Iron,
+];
+
+/**
+ * The share of its own wanted stock a place keeps back for its own living —
+ * the line between "we have this" and "we have this to spare".
+ *
+ * One number, shared by the two claims that may only ever eat surplus: an
+ * industry working raw material (`industry.ts`) and a place building with it
+ * (`construction.ts`). They have to agree, or the looser of the two silently
+ * decides the stricter one's behaviour.
+ *
+ * It has to sit comfortably below 1, because storage settles *at* target and
+ * never above it: deliveries stop being called for the moment a shelf reaches
+ * `targetStock`, so a threshold at 0.9 — which reads as "just under a full
+ * larder" — is in fact above anything the supply chain will ever deliver. At
+ * 0.9 every industry in the game read `hasInput = false` forever, including
+ * sawmills at places whose own wood shortage was exactly 0.00. The lesson is
+ * one this project keeps relearning: a threshold's meaning depends on the
+ * distribution it is compared against.
+ */
+export const WORKING_RESERVE = 0.6;
+
 /** Goods an industry makes rather than the ground — kept for the places that treat them differently. */
 export const PROCESSED_GOODS: readonly ResourceType[] = [
   ResourceType.Planks,
   ResourceType.StoneBlocks,
   ResourceType.Tools,
+  ResourceType.Fittings,
+  ResourceType.Bread,
 ];
 
 /**
@@ -84,9 +212,28 @@ export const BASE_VALUE: Record<ResourceType, number> = {
   [ResourceType.Stone]: 1,
   [ResourceType.Food]: 1,
   [ResourceType.Iron]: 2,
-  [ResourceType.Planks]: 2.5,
-  [ResourceType.StoneBlocks]: 2.5,
-  [ResourceType.Tools]: 6,
+  // Milling and dressing were marked up only a quarter over the raw material
+  // — 2.5 against two units of wood worth 1 apiece — and that was set at a
+  // time when no sawmill in the game had ever run, so nothing ever tested it.
+  // Once wealth became a margin rather than the output's whole price (see
+  // `world.ts`), a quarter's markup meant a four-man sawmill earned about a
+  // third of a unit an hour: an industry that occupied real people and moved
+  // real goods and was, in wealth terms, indistinguishable from nothing. A
+  // sawn board really was worth several times the log it came out of, and
+  // more to the point the vision asks industry to be a *source* of wealth
+  // rather than a rounding error on one.
+  [ResourceType.Planks]: 3.5,
+  [ResourceType.StoneBlocks]: 3.5,
+  [ResourceType.Tools]: 9,
+  // Two planks and a tool go in (sixteen), and what comes out is worth more
+  // than the sum: that margin is the reason a joiner exists, and a joinery is
+  // the hardest shop in the game to site — it needs two finished chains to
+  // both reach the same place.
+  [ResourceType.Fittings]: 20,
+  // Two grain and the fuel to bake them (three) become one loaf worth four:
+  // a modest margin, because the real return on baking is not coin, it is
+  // that the loaf feeds three and travels as one.
+  [ResourceType.Bread]: 4,
 };
 
 /** How far a shipment's road is allowed to matter, in resistance units. */
@@ -184,7 +331,7 @@ export function demandLevel(trader: Trader, resource: ResourceType): DemandLevel
 /** How good a road is worth using, from its length-weighted cost and how packed it is. */
 export function routeScore(route: Route, traffic: TrafficField): number {
   const distance = 1 / (1 + route.resistance / REFERENCE_RESISTANCE);
-  const quality = clamp01(traffic.wearAlong(route.points) / WEAR_FULL);
+  const quality = clamp01(route.wear(traffic) / WEAR_FULL);
   return distance * (0.4 + 0.6 * quality);
 }
 
@@ -228,22 +375,37 @@ export function withdraw(trader: Trader, resource: ResourceType, amount: number)
 }
 
 /**
- * People eat, burn firewood, wear out tools. Every tracked good — raw and
- * processed alike — comes off the shelf at exactly the rate the same place's
- * demand is quoted at, which is what keeps `shortage` a live reading of how
- * a place is actually doing rather than a high-water mark it reached once.
+ * People eat and burn firewood. Those two come off the shelf at exactly the
+ * rate the same place's demand is quoted at, which is what keeps `shortage` a
+ * live reading of how a place is actually doing rather than a high-water mark
+ * it reached once.
  *
  * This is the counterpart to `targetStock`: a place wants
  * `TARGET_BUFFER_MINUTES` of demand on hand, and burns that demand down, so
  * a shelf holds steady exactly when deliveries keep pace and slides when
  * they don't. Nothing else in the economy has to be told a place is
  * struggling; the shelf says so.
+ *
+ * Everything else on the table keeps its `targetStock` — a place still likes
+ * a stack of stone and a few tools about — but is only ever drawn down by
+ * something actually being built with it. See `SUBSISTENCE`, which is where
+ * the reasoning lives, and `construction.ts`, which is now the draw.
  */
 export function consume(trader: Trader, dt: number): void {
-  for (const resource of TRACKED_GOODS) {
-    const use = CONSUMPTION_PER_CAPITA[resource] * trader.population * dt;
-    trader.storage[resource] = Math.max(0, trader.storage[resource] - use);
+  const firewood = CONSUMPTION_PER_CAPITA[ResourceType.Wood] * trader.population * dt;
+  trader.storage[ResourceType.Wood] = Math.max(0, trader.storage[ResourceType.Wood] - firewood);
+
+  // Eating is one need, and two goods can meet it. Bread goes first — it is
+  // what the grain was baked into, and leaving it on the shelf while grain
+  // came off would have had a place hoard loaves and starve. Whatever the
+  // loaves do not cover comes out of the sacks.
+  let hunger = CONSUMPTION_PER_CAPITA[ResourceType.Food] * trader.population * dt;
+  const loaves = Math.min(trader.storage[ResourceType.Bread], hunger / BREAD_NOURISHMENT);
+  if (loaves > 0) {
+    trader.storage[ResourceType.Bread] -= loaves;
+    hunger -= loaves * BREAD_NOURISHMENT;
   }
+  trader.storage[ResourceType.Food] = Math.max(0, trader.storage[ResourceType.Food] - hunger);
 }
 
 /**
@@ -273,6 +435,8 @@ export function emptyAmounts(): Record<ResourceType, number> {
     [ResourceType.Planks]: 0,
     [ResourceType.StoneBlocks]: 0,
     [ResourceType.Tools]: 0,
+    [ResourceType.Fittings]: 0,
+    [ResourceType.Bread]: 0,
   };
 }
 
@@ -290,9 +454,21 @@ const THROUGHPUT_TAU = 180;
 /** Seconds for population to close most of the way to its sustainable size. */
 const POPULATION_TIME_CONSTANT = 100;
 
-/** How much of a resource a place would like to see arriving, per minute. */
+/**
+ * How much of a resource a place would like to see arriving, per minute:
+ * what its people get through simply living, plus what it is currently
+ * putting into the ground. See `CONSTRUCTION_GOODS`.
+ *
+ * Anything on neither list — iron, which is a smithy's feedstock and nobody's
+ * dinner or doorframe — keeps the plain per-capita reading, which is really a
+ * statement about how big a working stock a place of that size likes to keep.
+ */
 export function demandPerMin(trader: Trader, resource: ResourceType): number {
-  return trader.population * DEMAND_PER_CAPITA_PER_MIN[resource];
+  const perCapita = trader.population * DEMAND_PER_CAPITA_PER_MIN[resource];
+  const subsistence = SUBSISTENCE.includes(resource);
+  const building = CONSTRUCTION_GOODS.includes(resource);
+  if (!subsistence && !building) return perCapita;
+  return (subsistence ? perCapita : 0) + (building ? perCapita * trader.buildAppetite : 0);
 }
 
 /** A delivery has landed; feed it into the place's rolling throughput. */
@@ -380,6 +556,15 @@ function supportedBy(traders: readonly Trader[]): number {
 export function supportedByResource(traders: readonly Trader[], resource: ResourceType): number {
   let arriving = 0;
   for (const trader of traders) arriving += throughputPerMin(trader, resource);
+  // Loaves are food arriving, and have to be counted as such or a realm that
+  // bakes would read as starving on the strength of the grain it no longer
+  // needs to ship. This is the one place the substitution in `consume` has to
+  // be mirrored: population is read off what is *arriving*, not off shelves.
+  if (resource === ResourceType.Food) {
+    for (const trader of traders) {
+      arriving += throughputPerMin(trader, ResourceType.Bread) * BREAD_NOURISHMENT;
+    }
+  }
   return arriving / DEMAND_PER_CAPITA_PER_MIN[resource];
 }
 
@@ -442,6 +627,8 @@ export function easePopulation(current: number, target: number, dt: number): num
 
 export interface DestinationInfo {
   trader: Trader;
+  /** The road the goods would actually take — what decides how much can go at once. */
+  route: Route;
   distance: number;
   /** How much a unit is worth here — scarcity alone, before distance is charged against it. */
   value: number;
@@ -464,7 +651,35 @@ export function destinationsFor(
     if (!route) continue;
     const value = demandScore(trader, resource);
     const routeQuality = routeScore(route, traffic);
-    out.push({ trader, distance: route.length, value, routeQuality, score: value * routeQuality, demand: demandLevel(trader, resource) });
+    out.push({ trader, route, distance: route.length, value, routeQuality, score: value * routeQuality, demand: demandLevel(trader, resource) });
   }
   return out.sort((a, b) => b.score - a.score);
+}
+
+/**
+ * The one destination that would win, without ranking the rest.
+ *
+ * Every caller in the simulation takes `destinationsFor(...)[0]` and drops
+ * the tail — only the inspector panel ever shows more than the winner — and
+ * the dispatcher asks this of every source in the realm, for every good, many
+ * times a second. Ties fall to whichever trader comes first in the list, which
+ * is what a stable sort by descending score already did.
+ */
+export function bestDestinationFor(
+  resource: ResourceType,
+  traders: Trader[],
+  routeBetween: (to: Trader) => Route | null,
+  traffic: TrafficField,
+): DestinationInfo | null {
+  let best: DestinationInfo | null = null;
+  for (const trader of traders) {
+    const route = routeBetween(trader);
+    if (!route) continue;
+    const value = demandScore(trader, resource);
+    const routeQuality = routeScore(route, traffic);
+    const score = value * routeQuality;
+    if (best !== null && score <= best.score) continue;
+    best = { trader, route, distance: route.length, value, routeQuality, score, demand: demandLevel(trader, resource) };
+  }
+  return best;
 }

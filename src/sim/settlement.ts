@@ -118,14 +118,20 @@ export class Settlement {
   readonly outgoing = emptyAmounts();
   /** Rolling record of what has been arriving, per resource. */
   readonly throughput = emptyAmounts();
-  /** What tier is read off — see `development.ts`. Founded as a Hamlet, same as anywhere else. */
+  /** What tier is read off: standing built fabric — see `development.ts`. Founded as a Hamlet, same as anywhere else. */
   development = 0;
   /** Running total, earned from industry output and selling surplus — see `economy.ts`'s wealth functions. */
   wealth = 0;
   /** Decaying accumulator behind `wealthIncomePerMin` — the same trick `throughput` uses. */
   wealthIncome = 0;
-  /** Cumulative wood put toward housing — see `housing.ts` for what this actually unlocks. */
-  housingInvestment = 0;
+  /** Fabric standing in houses — see `construction.ts`, and `housing.ts` for what it holds. */
+  dwellings = 0;
+  /** What the standing fabric was built out of, 0 (log and rubble) to 1 (plank and dressed stone). */
+  fabricQuality = 0;
+  /** How much building this place has in front of it, 0 to 1 — what its appetite for material is read off. */
+  buildAppetite = 0;
+  /** Net fabric laid per hour on the last pass — what the development trend is read off. */
+  fabricRate = 0;
   /** One of each kind, present from the start; inert until staffed — see `industry.ts`. */
   readonly industries: Industry[] = Object.values(IndustryType).map((type) => new Industry(type, this));
 
@@ -177,7 +183,7 @@ export class Settlement {
     });
   }
 
-  /** How big this place has grown, read straight off its development. */
+  /** How big this place has grown, read off what it has built and how many live there. */
   get tier(): Tier {
     return tierFor(this.development, this.population);
   }
